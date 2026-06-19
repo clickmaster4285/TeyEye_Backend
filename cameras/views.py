@@ -5,6 +5,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.http import StreamingHttpResponse
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, status, viewsets
 from rest_framework.authtoken.models import Token
@@ -17,6 +18,8 @@ import requests
 
 from ml.client import MLServiceError, ml_detect_image, ml_live_detections, ml_live_mjpeg_url, ml_service_enabled
 
+from .detection_utils import save_detection_batch
+from .search_utils import apply_detection_search
 from .models import Camera, CameraPurpose, DetectionEvent, Nvr, Site
 from .rtsp_utils import build_rtsp_url_for_preview
 from .serializers import (
@@ -158,13 +161,74 @@ class CameraViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="detection-events")
     def detection_events(self, request):
-        qs = DetectionEvent.objects.select_related("camera").order_by("-created_at")
+        qs = (
+            DetectionEvent.objects.select_related("camera", "camera__nvr", "camera__nvr__site")
+            .order_by("-created_at")
+        )
         camera_id = request.query_params.get("camera")
         if camera_id:
             qs = qs.filter(camera_id=camera_id)
-        limit = min(int(request.query_params.get("limit", 100)), 500)
-        events = qs[:limit]
-        return Response(DetectionEventSerializer(events, many=True).data)
+        site_code = request.query_params.get("site")
+        if site_code:
+            qs = qs.filter(camera__nvr__site__code__iexact=site_code.strip())
+        site_id = request.query_params.get("site_id")
+        if site_id:
+            qs = qs.filter(camera__nvr__site_id=site_id)
+        nvr_id = request.query_params.get("nvr")
+        if nvr_id:
+            qs = qs.filter(camera__nvr_id=nvr_id)
+        channel = request.query_params.get("channel")
+        if channel:
+            try:
+                qs = qs.filter(camera__channel=int(channel))
+            except (TypeError, ValueError):
+                pass
+        zone = request.query_params.get("zone")
+        if zone and zone.strip():
+            qs = qs.filter(camera__zone__iexact=zone.strip())
+        date_from = request.query_params.get("date_from")
+        if date_from:
+            parsed = parse_date(date_from.strip())
+            if parsed:
+                qs = qs.filter(created_at__date__gte=parsed)
+        date_to = request.query_params.get("date_to")
+        if date_to:
+            parsed = parse_date(date_to.strip())
+            if parsed:
+                qs = qs.filter(created_at__date__lte=parsed)
+        search_q = request.query_params.get("q") or request.query_params.get("search")
+        if search_q and search_q.strip():
+            qs = apply_detection_search(qs, search_q.strip())
+
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except (TypeError, ValueError):
+            page = 1
+        try:
+            page_size = int(request.query_params.get("page_size", 25))
+        except (TypeError, ValueError):
+            page_size = 25
+        if request.query_params.get("limit") and "page_size" not in request.query_params:
+            try:
+                page_size = int(request.query_params.get("limit", page_size))
+            except (TypeError, ValueError):
+                pass
+        page_size = min(max(page_size, 1), 50)
+
+        total = qs.count()
+        offset = (page - 1) * page_size
+        events = qs[offset : offset + page_size]
+        total_pages = (total + page_size - 1) // page_size if total else 0
+
+        return Response(
+            {
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "results": DetectionEventSerializer(events, many=True).data,
+            }
+        )
 
     @action(detail=False, methods=["get"], url_path="detection-summary")
     def detection_summary(self, request):
@@ -193,13 +257,29 @@ class CameraViewSet(viewsets.ModelViewSet):
             result = ml_live_detections(camera.stream_key, rtsp_url=stream_url)
         except MLServiceError as exc:
             return Response({"detail": str(exc)}, status=exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        detections = result.get("detections") or []
+        save_param = request.query_params.get("save", "true").lower()
+        saved_count = 0
+        if save_param in ("true", "1", "yes") and detections:
+            saved_count = save_detection_batch(camera, detections)
+
         return Response(
             {
                 "camera_id": camera.pk,
                 "camera_code": camera.code,
+                "camera_name": camera.name,
+                "site_code": camera.nvr.site.code if camera.nvr_id else "",
+                "site_name": camera.nvr.site.name if camera.nvr_id else "",
+                "nvr_name": camera.nvr.name if camera.nvr_id else "",
+                "nvr_ip": camera.nvr.ip_address if camera.nvr_id else "",
                 "channel": camera.channel,
-                "nvr_name": camera.nvr.name,
-                **result,
+                "zone": camera.zone,
+                "purpose": camera.purpose,
+                "purpose_label": camera.get_purpose_display(),
+                "detections": detections,
+                "count": len(detections),
+                "saved_count": saved_count,
             }
         )
 
@@ -248,6 +328,12 @@ class CameraViewSet(viewsets.ModelViewSet):
             {
                 "camera_id": camera.pk,
                 "camera_code": camera.code,
+                "camera_name": camera.name,
+                "site_code": camera.nvr.site.code,
+                "site_name": camera.nvr.site.name,
+                "nvr_name": camera.nvr.name,
+                "nvr_ip": camera.nvr.ip_address,
+                "channel": camera.channel,
                 "detections": detections,
                 "count": len(detections),
                 "events_saved": len(saved),
