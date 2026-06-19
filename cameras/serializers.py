@@ -181,7 +181,7 @@ def nvr_brand_options():
 
 class DetectionEventSerializer(serializers.ModelSerializer):
     camera_code = serializers.CharField(source="camera.code", read_only=True)
-    camera_name = serializers.CharField(source="camera.name", read_only=True)
+    name = serializers.CharField(source="camera.name", read_only=True)
     site_code = serializers.CharField(source="camera.nvr.site.code", read_only=True)
     site_name = serializers.CharField(source="camera.nvr.site.name", read_only=True)
     nvr_name = serializers.CharField(source="camera.nvr.name", read_only=True)
@@ -197,7 +197,7 @@ class DetectionEventSerializer(serializers.ModelSerializer):
             "id",
             "camera",
             "camera_code",
-            "camera_name",
+            "name",
             "site_code",
             "site_name",
             "nvr_name",

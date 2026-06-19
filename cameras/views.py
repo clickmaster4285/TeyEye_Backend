@@ -278,7 +278,7 @@ class CameraViewSet(viewsets.ModelViewSet):
             {
                 "camera_id": camera.pk,
                 "camera_code": camera.code,
-                "camera_name": camera.name,
+                "name": camera.name,
                 "site_code": camera.nvr.site.code if camera.nvr_id else "",
                 "site_name": camera.nvr.site.name if camera.nvr_id else "",
                 "nvr_name": camera.nvr.name if camera.nvr_id else "",
@@ -338,7 +338,7 @@ class CameraViewSet(viewsets.ModelViewSet):
             {
                 "camera_id": camera.pk,
                 "camera_code": camera.code,
-                "camera_name": camera.name,
+                "name": camera.name,
                 "site_code": camera.nvr.site.code,
                 "site_name": camera.nvr.site.name,
                 "nvr_name": camera.nvr.name,
