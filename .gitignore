@@ -26,6 +26,7 @@ db.sqlite3
 media/
 staticfiles/
 local_settings.py
+.detection_worker.lock
 
 # Environment (never commit secrets)
 .env

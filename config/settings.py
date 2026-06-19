@@ -246,5 +246,11 @@ ML_KNOWN_FACES_DIR = os.getenv("ML_KNOWN_FACES_DIR", os.path.join(ML_ROOT_PATH, 
 ML_AUTO_START = os.getenv("ML_AUTO_START", "True").lower() in ("true", "1", "yes")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").rstrip("/")
 
+# Background detection worker (saves ML readings without browser open)
+DETECTION_WORKER_ENABLED = os.getenv("DETECTION_WORKER_ENABLED", "True").lower() in ("true", "1", "yes")
+DETECTION_WORKER_AUTO_START = os.getenv("DETECTION_WORKER_AUTO_START", "True").lower() in ("true", "1", "yes")
+DETECTION_WORKER_INTERVAL_SEC = float(os.getenv("DETECTION_WORKER_INTERVAL_SEC", "2"))
+DETECTION_WORKER_CAMERA_REFRESH_SEC = int(os.getenv("DETECTION_WORKER_CAMERA_REFRESH_SEC", "60"))
+
 # CCTV stream FPS for ffmpeg proxy (RTSP URLs are built dynamically from NVR DB records)
 CAMERA_STREAM_FPS = int(os.getenv("ML_LIVE_STREAM_FPS", "25"))

@@ -182,6 +182,14 @@ def nvr_brand_options():
 class DetectionEventSerializer(serializers.ModelSerializer):
     camera_code = serializers.CharField(source="camera.code", read_only=True)
     camera_name = serializers.CharField(source="camera.name", read_only=True)
+    site_code = serializers.CharField(source="camera.nvr.site.code", read_only=True)
+    site_name = serializers.CharField(source="camera.nvr.site.name", read_only=True)
+    nvr_name = serializers.CharField(source="camera.nvr.name", read_only=True)
+    nvr_ip = serializers.CharField(source="camera.nvr.ip_address", read_only=True)
+    channel = serializers.IntegerField(source="camera.channel", read_only=True)
+    zone = serializers.CharField(source="camera.zone", read_only=True)
+    purpose = serializers.CharField(source="camera.purpose", read_only=True)
+    purpose_label = serializers.CharField(source="camera.get_purpose_display", read_only=True)
 
     class Meta:
         model = DetectionEvent
@@ -190,6 +198,14 @@ class DetectionEventSerializer(serializers.ModelSerializer):
             "camera",
             "camera_code",
             "camera_name",
+            "site_code",
+            "site_name",
+            "nvr_name",
+            "nvr_ip",
+            "channel",
+            "zone",
+            "purpose",
+            "purpose_label",
             "class_name",
             "label",
             "confidence",

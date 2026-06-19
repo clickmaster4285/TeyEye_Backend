@@ -1,4 +1,5 @@
 import os
+import sys
 
 from django.apps import AppConfig
 
@@ -8,7 +9,8 @@ class MlConfig(AppConfig):
     name = "ml"
 
     def ready(self):
-        if os.environ.get("RUN_MAIN") != "true":
+        # runserver autoreload parent — skip; gunicorn / worker have no RUN_MAIN
+        if "runserver" in sys.argv and os.environ.get("RUN_MAIN") != "true":
             return
         from .autostart import maybe_start_ml_service
 
