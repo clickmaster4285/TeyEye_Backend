@@ -213,7 +213,17 @@ class CameraViewSet(viewsets.ModelViewSet):
                 page_size = int(request.query_params.get("limit", page_size))
             except (TypeError, ValueError):
                 pass
-        page_size = min(max(page_size, 1), 50)
+        page_size = min(max(page_size, 1), 100)
+
+        is_alert = request.query_params.get("is_alert")
+        if is_alert is not None and str(is_alert).strip().lower() in ("true", "1", "yes"):
+            qs = qs.filter(is_alert=True)
+        elif is_alert is not None and str(is_alert).strip().lower() in ("false", "0", "no"):
+            qs = qs.filter(is_alert=False)
+
+        class_name = request.query_params.get("class_name")
+        if class_name and class_name.strip():
+            qs = qs.filter(class_name__icontains=class_name.strip())
 
         total = qs.count()
         offset = (page - 1) * page_size

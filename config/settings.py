@@ -220,24 +220,32 @@ def _resolve_ffmpeg_path() -> str:
 FFMPEG_PATH = _resolve_ffmpeg_path()
 
 # -----------------------------
-# ML inference service (ml_service/api_server.py in project root)
+# ML inference service (backend/ml_service/api_server.py)
 # -----------------------------
 ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://127.0.0.1:8100").strip()
 ML_SERVICE_TIMEOUT = int(os.getenv("ML_SERVICE_TIMEOUT", "60"))
 
 
 def _resolve_ml_root() -> str:
-    """Use ml_service inside the repo; ignore ML_ROOT_PATH that points outside."""
-    default = str((PROJECT_ROOT / "ml_service").resolve())
+    """Prefer backend/ml_service; honor ML_ROOT_PATH when it lives under backend or repo root."""
+    default = str((BASE_DIR / "ml_service").resolve())
     configured = os.getenv("ML_ROOT_PATH", "").strip()
     if not configured:
         return default
     try:
-        resolved = Path(configured).resolve()
-        if resolved.is_relative_to(PROJECT_ROOT.resolve()):
-            return str(resolved)
+        resolved = Path(configured)
+        if not resolved.is_absolute():
+            resolved = (BASE_DIR / resolved).resolve()
+        else:
+            resolved = resolved.resolve()
+        for root in (BASE_DIR.resolve(), PROJECT_ROOT.resolve()):
+            if resolved.is_relative_to(root):
+                return str(resolved)
     except (ValueError, OSError):
         pass
+    legacy = (PROJECT_ROOT / "ml_service").resolve()
+    if legacy.is_dir():
+        return str(legacy)
     return default
 
 

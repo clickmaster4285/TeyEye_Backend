@@ -1,4 +1,4 @@
-"""HTTP client for the ML inference service (ml_service/api_server.py)."""
+"""HTTP client for the ML inference service (backend/ml_service/api_server.py)."""
 
 from __future__ import annotations
 
