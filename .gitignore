@@ -33,8 +33,9 @@ local_settings.py
 .env.*
 !.env.example
 
-# ML service / local tools
+# ML service / local tools (weights, models, logs — not committed)
 ml_service/
+ml_services/
 tools/ffmpeg/bin/
 
 # Test / coverage

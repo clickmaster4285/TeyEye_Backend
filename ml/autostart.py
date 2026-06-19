@@ -24,7 +24,7 @@ def _ml_root() -> Path:
             return Path(configured)
     except Exception:
         pass
-    return Path(__file__).resolve().parent.parent.parent / "ml_service"
+    return Path(__file__).resolve().parent.parent / "ml_service"
 
 
 def _python_works(exe: str) -> bool:
@@ -45,9 +45,13 @@ def _resolve_python() -> str:
     custom = os.getenv("ML_PYTHON", "").strip()
     if custom:
         candidates.append(custom)
-    venv_py = _ml_root() / ".venv" / "Scripts" / "python.exe"
-    if venv_py.is_file():
-        candidates.append(str(venv_py))
+    backend_dir = Path(__file__).resolve().parent.parent
+    root = _ml_root()
+    for base in (backend_dir, root):
+        for venv_parts in ((".venv", "Scripts", "python.exe"), (".venv", "bin", "python"), ("venv", "Scripts", "python.exe"), ("venv", "bin", "python")):
+            venv_py = base.joinpath(*venv_parts)
+            if venv_py.is_file():
+                candidates.append(str(venv_py))
     candidates.append(sys.executable)
 
     for exe in candidates:
@@ -116,38 +120,47 @@ def _health_matches_config(base_url: str) -> bool:
 
 
 def _stop_listeners_on_port(port: int) -> None:
-    """Stop processes listening on a TCP port (Windows netstat / taskkill)."""
-    if os.name != "nt":
+    """Stop processes listening on a TCP port."""
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return
+        needle = f":{port}"
+        for line in result.stdout.splitlines():
+            if needle not in line or "LISTENING" not in line:
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            try:
+                pid = int(parts[-1])
+            except ValueError:
+                continue
+            if pid in (0, os.getpid()):
+                continue
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F"],
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
         return
     try:
         result = subprocess.run(
-            ["netstat", "-ano"],
+            ["fuser", "-k", f"{port}/tcp"],
             capture_output=True,
-            text=True,
             timeout=10,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return
-    needle = f":{port}"
-    for line in result.stdout.splitlines():
-        if needle not in line or "LISTENING" not in line:
-            continue
-        parts = line.split()
-        if not parts:
-            continue
-        try:
-            pid = int(parts[-1])
-        except ValueError:
-            continue
-        if pid in (0, os.getpid()):
-            continue
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F"],
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
+        pass
 
 
 def _wait_for_health(base_url: str, timeout_sec: float = 120.0) -> bool:
