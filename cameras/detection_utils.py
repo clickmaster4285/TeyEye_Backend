@@ -5,9 +5,11 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
+from django.conf import settings
 from django.utils import timezone
 
-from .models import Camera, DetectionEvent
+from .clip_capture import schedule_detection_clip
+from .models import Camera, ClipStatus, DetectionEvent
 
 DEFAULT_MIN_CONFIDENCE = 0.25
 DEFAULT_DEDUP_SECONDS = 45
@@ -47,14 +49,17 @@ def save_detection_batch(
         ).exists():
             continue
 
-        DetectionEvent.objects.create(
+        clip_enabled = bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
+        event = DetectionEvent.objects.create(
             camera=camera,
             class_name=class_name[:80],
             label=label[:120],
             confidence=confidence,
             bbox=det.get("bbox") or [],
             is_alert=bool(det.get("alert")),
+            clip_status=ClipStatus.PENDING if clip_enabled else ClipStatus.SKIPPED,
         )
+        schedule_detection_clip(camera.pk, event.pk)
         saved += 1
 
     return saved

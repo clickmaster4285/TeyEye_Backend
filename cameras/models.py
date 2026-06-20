@@ -139,6 +139,14 @@ class Camera(models.Model):
             super().save(update_fields=["code"])
 
 
+class ClipStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    RECORDING = "recording", "Recording"
+    READY = "ready", "Ready"
+    FAILED = "failed", "Failed"
+    SKIPPED = "skipped", "Skipped"
+
+
 class DetectionEvent(models.Model):
     camera = models.ForeignKey(Camera, on_delete=models.CASCADE, related_name="detection_events")
     class_name = models.CharField(max_length=80)
@@ -146,6 +154,16 @@ class DetectionEvent(models.Model):
     confidence = models.FloatField()
     bbox = models.JSONField(default=list)
     is_alert = models.BooleanField(default=False)
+    clip = models.FileField(
+        upload_to="detection_clips/%Y/%m/%d/",
+        blank=True,
+        help_text="Short MP4 captured when this detection was saved (5–10 s).",
+    )
+    clip_status = models.CharField(
+        max_length=16,
+        choices=ClipStatus.choices,
+        default=ClipStatus.PENDING,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
