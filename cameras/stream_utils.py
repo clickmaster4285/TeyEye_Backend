@@ -10,11 +10,15 @@ from typing import Iterator
 
 
 def resolve_ffmpeg_path() -> str | None:
+    import sys
+
     from django.conf import settings
 
     custom = getattr(settings, "FFMPEG_PATH", "").strip()
     if custom and os.path.isfile(custom):
-        return custom
+        if sys.platform == "win32" or not custom.lower().endswith(".exe"):
+            if os.access(custom, os.X_OK):
+                return custom
     found = shutil.which("ffmpeg")
     if found:
         return found

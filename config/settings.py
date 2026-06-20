@@ -1,6 +1,7 @@
 from pathlib import Path
 import os
 import shutil
+import sys
 from dotenv import load_dotenv
 
 # -----------------------------
@@ -204,13 +205,16 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = int(
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 def _resolve_ffmpeg_path() -> str:
-    """Full path to ffmpeg.exe (bundled in repo, then .env, then PATH)."""
-    bundled = PROJECT_ROOT / "tools" / "ffmpeg" / "bin" / "ffmpeg.exe"
-    if bundled.is_file():
+    """Resolve ffmpeg: bundled (OS-specific), .env, then PATH."""
+    bundled_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+    bundled = PROJECT_ROOT / "tools" / "ffmpeg" / "bin" / bundled_name
+    if bundled.is_file() and os.access(bundled, os.X_OK):
         return str(bundled)
     custom = os.getenv("FFMPEG_PATH", "").strip()
     if custom and os.path.isfile(custom):
-        return custom
+        if sys.platform == "win32" or not custom.lower().endswith(".exe"):
+            if os.access(custom, os.X_OK):
+                return custom
     on_path = shutil.which("ffmpeg")
     if on_path:
         return on_path
