@@ -171,11 +171,6 @@ class DetectionEvent(models.Model):
         blank=True,
         help_text="JPEG snapshot captured when this detection was saved.",
     )
-    clip_thumb = models.FileField(
-        upload_to="detection_clips/%Y/%m/%d/",
-        blank=True,
-        help_text="Small JPEG thumbnail for the detection log table.",
-    )
     clip_status = models.CharField(
         max_length=16,
         choices=ClipStatus.choices,

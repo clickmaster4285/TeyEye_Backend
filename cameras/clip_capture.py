@@ -27,10 +27,6 @@ _locks_guard = threading.Lock()
 _camera_queues: dict[int, deque[int]] = {}
 _queue_guard = threading.Lock()
 _active_queue_workers: set[int] = set()
-_global_capture_sem = threading.Semaphore(2)
-_THUMB_MAX_WIDTH = 320
-_SNAPSHOT_JPEG_QUALITY = 82
-_THUMB_JPEG_QUALITY = 72
 
 
 def _clip_enabled() -> bool:
@@ -61,6 +57,10 @@ def _ml_mjpeg_url(camera) -> str | None:
     if not ml_service_enabled():
         return None
     return ml_live_mjpeg_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
+
+
+def _rtsp_input_extra() -> list[str]:
+    return ["-rtsp_transport", "tcp"]
 
 
 def _display_class(event: DetectionEvent) -> str:
@@ -168,7 +168,7 @@ def _draw_detection_on_frame(frame, event: DetectionEvent):
     return output
 
 
-def _read_mjpeg_snapshot(mjpeg_url: str, *, timeout_sec: float = 6.0) -> object | None:
+def _read_mjpeg_snapshot(mjpeg_url: str, *, timeout_sec: float = 12.0) -> object | None:
     """Read one JPEG frame from the ML MJPEG stream."""
     try:
         import cv2
@@ -205,7 +205,7 @@ def _read_mjpeg_snapshot(mjpeg_url: str, *, timeout_sec: float = 6.0) -> object 
     return None
 
 
-def _read_rtsp_snapshot(stream_url: str, *, timeout_sec: float = 10.0) -> object | None:
+def _read_rtsp_snapshot(stream_url: str) -> object | None:
     """Grab one frame from RTSP via ffmpeg."""
     try:
         import cv2
@@ -221,25 +221,18 @@ def _read_rtsp_snapshot(stream_url: str, *, timeout_sec: float = 10.0) -> object
         "-hide_banner",
         "-loglevel",
         "error",
-        "-rtsp_transport",
-        "tcp",
-        "-stimeout",
-        "5000000",
-        "-probesize",
-        "32768",
-        "-analyzeduration",
-        "500000",
+        *_rtsp_input_extra(),
         "-i",
         stream_url,
         "-frames:v",
         "1",
         "-q:v",
-        "3",
+        "2",
         "-y",
         temp_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout_sec)
+        proc = subprocess.run(cmd, capture_output=True, timeout=25)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         logger.warning("RTSP snapshot ffmpeg failed: %s", exc)
         return None
@@ -260,49 +253,19 @@ def _read_rtsp_snapshot(stream_url: str, *, timeout_sec: float = 10.0) -> object
     return frame
 
 
-def _snapshot_stream_urls(camera) -> list[str]:
-    """Prefer low-bandwidth substream URLs for faster single-frame capture."""
-    from .rtsp_utils import build_rtsp_substream_url_from_nvr, build_rtsp_url_from_nvr
-
-    urls: list[str] = []
-    if camera.nvr_id:
-        sub = build_rtsp_substream_url_from_nvr(camera.nvr, camera.channel)
-        main = build_rtsp_url_from_nvr(camera.nvr, camera.channel)
-        if sub:
-            urls.append(sub)
-        if main and main not in urls:
-            urls.append(main)
-    else:
-        main = camera.effective_stream_url()
-        if main:
-            urls.append(main)
-    return urls
-
-
-def _capture_snapshot_frame(camera, mjpeg_url: str | None):
-    """RTSP first (fastest for one frame); MJPEG only as fallback."""
-    for stream_url in _snapshot_stream_urls(camera):
-        frame = _read_rtsp_snapshot(stream_url)
-        if frame is not None:
-            return frame
-
-    if mjpeg_url:
-        return _read_mjpeg_snapshot(mjpeg_url)
-    return None
-
-
-def _write_thumbnail(cv2, annotated, thumb_path: str) -> bool:
-    h, w = annotated.shape[:2]
-    if w > _THUMB_MAX_WIDTH:
-        scale = _THUMB_MAX_WIDTH / w
-        thumb = cv2.resize(
-            annotated,
-            (_THUMB_MAX_WIDTH, max(1, int(h * scale))),
-            interpolation=cv2.INTER_AREA,
-        )
-    else:
-        thumb = annotated
-    return bool(cv2.imwrite(thumb_path, thumb, [int(cv2.IMWRITE_JPEG_QUALITY), _THUMB_JPEG_QUALITY]))
+def _warm_ml_stream(camera) -> None:
+    try:
+        from ml.client import ml_live_detections, ml_service_enabled
+    except ImportError:
+        return
+    if not ml_service_enabled():
+        return
+    for _ in range(2):
+        try:
+            ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+            return
+        except Exception:
+            time.sleep(0.5)
 
 
 def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
@@ -330,59 +293,58 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
 
     _update_clip_status(event_id, ClipStatus.RECORDING)
 
-    with _global_capture_sem:
-        temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
-        os.makedirs(temp_dir, exist_ok=True)
-        temp_path = os.path.join(temp_dir, f"event_{event_id}_{int(time.time())}.jpg")
-        thumb_path = os.path.join(temp_dir, f"event_{event_id}_{int(time.time())}_thumb.jpg")
+    temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"event_{event_id}_{int(time.time())}.jpg")
 
+    try:
+        import cv2
+    except ImportError:
+        _update_clip_status(event_id, ClipStatus.FAILED)
+        return
+
+    frame = None
+    mjpeg_url = _ml_mjpeg_url(camera)
+    if mjpeg_url:
+        _warm_ml_stream(camera)
+        frame = _read_mjpeg_snapshot(mjpeg_url)
+
+    stream_url = camera.effective_stream_url()
+    if frame is None and stream_url:
+        frame = _read_rtsp_snapshot(stream_url)
+
+    if frame is None:
+        if not stream_url and not mjpeg_url:
+            _update_clip_status(event_id, ClipStatus.SKIPPED)
+        else:
+            _update_clip_status(event_id, ClipStatus.FAILED)
+        return
+
+    annotated = _draw_detection_on_frame(frame, event)
+    if not cv2.imwrite(temp_path, annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 88]):
+        _update_clip_status(event_id, ClipStatus.FAILED)
+        return
+
+    try:
+        filename = f"event_{event_id}.jpg"
+        with open(temp_path, "rb") as fh:
+            event.clip.save(filename, File(fh), save=True)
+        _update_clip_status(event_id, ClipStatus.READY)
+        logger.info(
+            "Saved detection snapshot for event %s (%s) class=%s",
+            event_id,
+            event.clip.name,
+            _snapshot_label(event),
+        )
+    except Exception:
+        logger.exception("Failed to save snapshot for detection event %s", event_id)
+        _update_clip_status(event_id, ClipStatus.FAILED)
+    finally:
         try:
-            import cv2
-        except ImportError:
-            _update_clip_status(event_id, ClipStatus.FAILED)
-            return
-
-        mjpeg_url = _ml_mjpeg_url(camera)
-        frame = _capture_snapshot_frame(camera, mjpeg_url)
-
-        if frame is None:
-            if not _snapshot_stream_urls(camera) and not mjpeg_url:
-                _update_clip_status(event_id, ClipStatus.SKIPPED)
-            else:
-                _update_clip_status(event_id, ClipStatus.FAILED)
-            return
-
-        annotated = _draw_detection_on_frame(frame, event)
-        if not cv2.imwrite(temp_path, annotated, [int(cv2.IMWRITE_JPEG_QUALITY), _SNAPSHOT_JPEG_QUALITY]):
-            _update_clip_status(event_id, ClipStatus.FAILED)
-            return
-
-        try:
-            filename = f"event_{event_id}.jpg"
-            thumb_filename = f"event_{event_id}_thumb.jpg"
-            with open(temp_path, "rb") as fh:
-                event.clip.save(filename, File(fh), save=False)
-            if _write_thumbnail(cv2, annotated, thumb_path):
-                with open(thumb_path, "rb") as fh:
-                    event.clip_thumb.save(thumb_filename, File(fh), save=False)
-            event.save(update_fields=["clip", "clip_thumb"])
-            _update_clip_status(event_id, ClipStatus.READY)
-            logger.info(
-                "Saved detection snapshot for event %s (%s) class=%s",
-                event_id,
-                event.clip.name,
-                _snapshot_label(event),
-            )
-        except Exception:
-            logger.exception("Failed to save snapshot for detection event %s", event_id)
-            _update_clip_status(event_id, ClipStatus.FAILED)
-        finally:
-            for path in (temp_path, thumb_path):
-                try:
-                    if os.path.isfile(path):
-                        os.remove(path)
-                except OSError:
-                    pass
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
 
 
 def _process_camera_queue(camera_id: int) -> None:
@@ -415,7 +377,7 @@ def _enqueue_clip(camera_id: int, event_id: int) -> None:
             thread.start()
 
 
-def requeue_pending_clips(*, limit: int = 50) -> int:
+def requeue_pending_clips(*, limit: int = 200) -> int:
     """Enqueue pending snapshots left from a previous run."""
     from .models import ClipStatus, DetectionEvent
 
