@@ -34,3 +34,4 @@ class UsersConfig(AppConfig):
 
     def ready(self):
         post_migrate.connect(create_initial_admin, sender=self)
+        from . import signals  # noqa: F401

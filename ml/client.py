@@ -62,10 +62,26 @@ def ml_health() -> dict[str, Any]:
     return res.json()
 
 
-def ml_reload_faces() -> dict[str, Any]:
-    res = _request("POST", "/reload/faces")
+def ml_reload_faces(embeddings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    payload = [
+        {"identity": entry["identity"], "embedding": entry["embedding"]}
+        for entry in (embeddings or [])
+    ]
+    res = _request("POST", "/reload/faces", json=payload)
     if res.status_code != 200:
         raise MLServiceError("Failed to reload known faces.", res.status_code)
+    return res.json()
+
+
+def ml_extract_face_embedding(file_bytes: bytes, filename: str = "face.jpg") -> dict[str, Any]:
+    res = _request(
+        "POST",
+        "/faces/extract",
+        files={"image": (filename, file_bytes, "application/octet-stream")},
+    )
+    if res.status_code != 200:
+        detail = res.text[:300]
+        raise MLServiceError(f"Face embedding extraction failed: {detail}", res.status_code)
     return res.json()
 
 

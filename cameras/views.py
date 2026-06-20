@@ -18,9 +18,11 @@ import requests
 
 from ml.client import MLServiceError, ml_detect_image, ml_live_detections, ml_live_mjpeg_url, ml_service_enabled
 
+from .clip_capture import schedule_detection_clip
+from .detection_utils import resolve_staff_identity
 from .detection_utils import save_detection_batch
 from .search_utils import apply_detection_search
-from .models import Camera, CameraPurpose, DetectionEvent, Nvr, Site
+from .models import Camera, CameraPurpose, ClipStatus, DetectionEvent, Nvr, Site
 from .rtsp_utils import build_rtsp_url_for_preview
 from .serializers import (
     BulkCameraCreateSerializer,
@@ -236,7 +238,9 @@ class CameraViewSet(viewsets.ModelViewSet):
                 "page": page,
                 "page_size": page_size,
                 "total_pages": total_pages,
-                "results": DetectionEventSerializer(events, many=True).data,
+                "results": DetectionEventSerializer(
+                    events, many=True, context={"request": request}
+                ).data,
             }
         )
 
@@ -323,15 +327,23 @@ class CameraViewSet(viewsets.ModelViewSet):
 
         detections = result.get("detections") or []
         saved = []
+        clip_enabled = bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
         for det in detections:
+            class_name = str(det.get("class_name", ""))
+            label = str(det.get("label", det.get("class_name", "")))
+            employee_name, personal_number = resolve_staff_identity(label, class_name)
             event = DetectionEvent.objects.create(
                 camera=camera,
-                class_name=str(det.get("class_name", "")),
-                label=str(det.get("label", det.get("class_name", ""))),
+                class_name=class_name,
+                label=label,
+                employee_name=employee_name,
+                personal_number=personal_number,
                 confidence=float(det.get("confidence", 0)),
                 bbox=det.get("bbox") or [],
                 is_alert=bool(det.get("alert")),
+                clip_status=ClipStatus.PENDING if clip_enabled else ClipStatus.SKIPPED,
             )
+            schedule_detection_clip(camera.pk, event.pk)
             saved.append(event)
 
         return Response(

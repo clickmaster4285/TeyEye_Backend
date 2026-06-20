@@ -212,7 +212,6 @@ def maybe_start_ml_service():
     env.setdefault("ML_API_PORT", port)
     env.setdefault("ML_API_HOST", "0.0.0.0")
     env.setdefault("ML_ROOT_PATH", str(_ml_root()))
-    env.setdefault("ML_KNOWN_FACES_DIR", str(_ml_root() / "known_faces"))
     python_exe = _resolve_python()
     log_path = _log_path()
 

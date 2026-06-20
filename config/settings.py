@@ -254,7 +254,6 @@ def _resolve_ml_root() -> str:
 
 
 ML_ROOT_PATH = _resolve_ml_root()
-ML_KNOWN_FACES_DIR = os.getenv("ML_KNOWN_FACES_DIR", os.path.join(ML_ROOT_PATH, "known_faces"))
 ML_AUTO_START = os.getenv("ML_AUTO_START", "True").lower() in ("true", "1", "yes")
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173").rstrip("/")
 
@@ -263,6 +262,12 @@ DETECTION_WORKER_ENABLED = os.getenv("DETECTION_WORKER_ENABLED", "True").lower()
 DETECTION_WORKER_AUTO_START = os.getenv("DETECTION_WORKER_AUTO_START", "True").lower() in ("true", "1", "yes")
 DETECTION_WORKER_INTERVAL_SEC = float(os.getenv("DETECTION_WORKER_INTERVAL_SEC", "2"))
 DETECTION_WORKER_CAMERA_REFRESH_SEC = int(os.getenv("DETECTION_WORKER_CAMERA_REFRESH_SEC", "60"))
+
+# JPEG snapshot saved with each new detection event (DETECTION_CLIP_SECONDS is unused; kept for .env compat)
+DETECTION_CLIP_ENABLED = os.getenv("DETECTION_CLIP_ENABLED", "true").strip().lower() in ("true", "1", "yes")
+DETECTION_CLIP_SECONDS = int(os.getenv("DETECTION_CLIP_SECONDS", "7"))
+# Min seconds before the same label/class on one camera is saved again (0 = save every poll)
+DETECTION_DEDUP_SECONDS = int(os.getenv("DETECTION_DEDUP_SECONDS", "5"))
 
 # CCTV stream FPS for ffmpeg proxy (RTSP URLs are built dynamically from NVR DB records)
 CAMERA_STREAM_FPS = int(os.getenv("ML_LIVE_STREAM_FPS", "25"))

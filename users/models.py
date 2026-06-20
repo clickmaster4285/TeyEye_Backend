@@ -78,6 +78,7 @@ class Staff(models.Model):
     )
     # Personal
     full_name = models.CharField(max_length=150)
+    father_name = models.CharField(max_length=150, null=True, blank=True)
     first_name = models.CharField(max_length=80, null=True, blank=True)
     last_name = models.CharField(max_length=80, null=True, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
@@ -148,9 +149,62 @@ class Staff(models.Model):
     leave_balance = models.PositiveIntegerField(null=True, blank=True)
     notes = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    RECORD_SOURCE_DATABASE = "database"
+    RECORD_SOURCE_DISPOSITION = "disposition"
+    RECORD_SOURCE_CHOICES = [
+        (RECORD_SOURCE_DATABASE, "Database"),
+        (RECORD_SOURCE_DISPOSITION, "Disposition"),
+    ]
+    record_source = models.CharField(
+        max_length=20,
+        choices=RECORD_SOURCE_CHOICES,
+        default=RECORD_SOURCE_DATABASE,
+    )
 
     def __str__(self):
         return f"{self.full_name} ({self.designation})"
+
+
+class StaffFaceEmbedding(models.Model):
+    """Face enrollment photo + deep-learning embedding vector for staff recognition."""
+
+    EMBEDDING_MODEL_SFACE = "sface"
+
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="face_embeddings",
+    )
+    image = models.ImageField(upload_to="staff_faces/")
+    embedding = models.JSONField(
+        help_text="Face feature vector (cosine similarity matching, SFace/ArcFace-style).",
+    )
+    embedding_dim = models.PositiveSmallIntegerField(default=0)
+    embedding_model = models.CharField(max_length=32, default=EMBEDDING_MODEL_SFACE)
+    identity_label = models.CharField(
+        max_length=150,
+        db_index=True,
+        help_text="Username or full name used when matching detections.",
+    )
+    is_primary = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)
+    source_profile_image = models.CharField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Staff.profile_image path when this embedding was generated.",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-is_primary", "-updated_at"]
+        indexes = [
+            models.Index(fields=["staff", "is_active"]),
+        ]
+
+    def __str__(self):
+        return f"{self.identity_label} ({self.embedding_model}, dim={self.embedding_dim})"
 
 
 class Attendance(models.Model):

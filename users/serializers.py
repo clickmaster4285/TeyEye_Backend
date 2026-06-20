@@ -251,7 +251,7 @@ class StaffCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Staff
         fields = [
-            "user", "full_name", "first_name", "last_name", "cnic", "national_id",
+            "user", "full_name", "father_name", "first_name", "last_name", "cnic", "national_id",
             "date_of_birth", "gender", "marital_status", "blood_group", "profile_image",
             "email", "phone_primary", "phone_alternate", "address", "street_address",
             "city", "state", "country", "postal_code",
@@ -277,7 +277,7 @@ class StaffCreateSerializer(serializers.ModelSerializer):
             "tax_form_file", "certificates_file", "background_check_status",
             "skills_competencies", "languages_known", "performance_rating",
             "last_appraisal_date", "leave_balance", "notes", "created_at",
-            "date_of_joining",
+            "date_of_joining", "record_source",
         ]
         read_only_fields = ["created_at"]
         extra_kwargs = {
@@ -356,6 +356,15 @@ class StaffCreateSerializer(serializers.ModelSerializer):
         if not data.get("designation"):
             raise serializers.ValidationError({"designation": "Designation is required."})
 
+        data.setdefault("record_source", Staff.RECORD_SOURCE_DATABASE)
+
+        personal_number = str(initial.get("personal_number") or data.get("personal_number") or "").strip()
+        if personal_number:
+            data["personal_number"] = personal_number[:50]
+
+        father_name = str(initial.get("father_name") or data.get("father_name") or "").strip()
+        data["father_name"] = father_name[:150] or None
+
         for key in ("street_address", "emergency_contact_phone", "emergency_contact_name", "date_of_joining"):
             data.pop(key, None)
 
@@ -379,18 +388,21 @@ class StaffUpdateSerializer(serializers.ModelSerializer):
 # -----------------------------
 class StaffListSerializer(serializers.ModelSerializer):
     national_id = serializers.SerializerMethodField(read_only=True)
+    face_enrolled = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Staff
         fields = [
             "id",
             "full_name",
+            "father_name",
             "cnic",
             "national_id",
             "designation",
             "department",
             "emergency_contact",
             "profile_image",
+            "face_enrolled",
             "user",
             "employee_id",
             "personal_number",
@@ -405,6 +417,7 @@ class StaffListSerializer(serializers.ModelSerializer):
             "transferred_to",
             "employment_type",
             "job_status",
+            "record_source",
         ]
 
     def get_national_id(self, obj):
@@ -413,6 +426,16 @@ class StaffListSerializer(serializers.ModelSerializer):
             return getattr(obj, "national_id", None) or obj.cnic
         except Exception:
             return obj.cnic
+
+    def get_face_enrolled(self, obj):
+        if not obj.profile_image:
+            return False
+        try:
+            from ml.face_sync import staff_needs_face_enrollment
+
+            return not staff_needs_face_enrollment(obj)
+        except Exception:
+            return obj.face_embeddings.filter(is_active=True).exists()
 
 
 # -----------------------------

@@ -16,7 +16,7 @@ _SYNONYM_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"unknown", "stranger", "unidentified"}),
 )
 
-_NLP_SEARCH_FIELDS = ("label", "class_name")
+_NLP_SEARCH_FIELDS = ("label", "class_name", "employee_name", "personal_number")
 
 
 def levenshtein_distance(a: str, b: str) -> int:
