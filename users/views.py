@@ -11,7 +11,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.serializers import ValidationError
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from django_filters.rest_framework import DjangoFilterBackend
 from ml.client import MLServiceError, ml_recognize_face, ml_service_enabled
 from django.db.models import Q
@@ -141,6 +141,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class StaffViewSet(viewsets.ModelViewSet):
     """ViewSet for managing staff members"""
     permission_classes = [IsAdminOrHR]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [filters.SearchFilter, DjangoFilterBackend, filters.OrderingFilter]
     search_fields = ["full_name", "cnic", "designation", "department"]
     filterset_fields = ["department", "designation"]
@@ -208,7 +209,14 @@ class StaffViewSet(viewsets.ModelViewSet):
             user = User.objects.get(id=serializer.validated_data["user_id"])
             staff.user = user
             staff.save()
-            
+
+            try:
+                from ml.face_sync import sync_staff_identity_after_user_link
+
+                sync_staff_identity_after_user_link(staff)
+            except Exception:
+                pass
+
             create_activity_log(
                 request.user,
                 request,
@@ -315,7 +323,14 @@ class StaffViewSet(viewsets.ModelViewSet):
         # Link user to staff
         staff.user = user
         staff.save()
-        
+
+        try:
+            from ml.face_sync import sync_staff_identity_after_user_link
+
+            sync_staff_identity_after_user_link(staff)
+        except Exception:
+            pass
+
         create_activity_log(
             request.user,
             request,
@@ -424,7 +439,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                     "recognized": False,
                     "message": (
                         f"Face matched '{identity}' but no active user matches that username "
-                        "or staff full name. Run: python manage.py sync_known_faces"
+                        "or staff full name. Add a staff profile photo or run: python manage.py sync_staff_faces"
                     ),
                     "identity": identity,
                     "similarity": similarity,

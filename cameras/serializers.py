@@ -191,6 +191,7 @@ class DetectionEventSerializer(serializers.ModelSerializer):
     purpose = serializers.CharField(source="camera.purpose", read_only=True)
     purpose_label = serializers.CharField(source="camera.get_purpose_display", read_only=True)
     clip_url = serializers.SerializerMethodField()
+    clip_thumb_url = serializers.SerializerMethodField()
 
     class Meta:
         model = DetectionEvent
@@ -209,11 +210,14 @@ class DetectionEventSerializer(serializers.ModelSerializer):
             "purpose_label",
             "class_name",
             "label",
+            "employee_name",
+            "personal_number",
             "confidence",
             "bbox",
             "is_alert",
             "clip_status",
             "clip_url",
+            "clip_thumb_url",
             "created_at",
         ]
 
@@ -221,3 +225,10 @@ class DetectionEventSerializer(serializers.ModelSerializer):
         if not obj.clip:
             return ""
         return obj.clip.url
+
+    def get_clip_thumb_url(self, obj: DetectionEvent) -> str:
+        if obj.clip_thumb:
+            return obj.clip_thumb.url
+        if obj.clip:
+            return obj.clip.url
+        return ""

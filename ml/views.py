@@ -11,6 +11,7 @@ from .client import (
     ml_service_enabled,
     ml_validate_human_face,
 )
+from .face_sync import collect_db_face_embeddings
 
 
 class MLHealthAPIView(APIView):
@@ -70,7 +71,7 @@ class MLReloadFacesAPIView(APIView):
 
     def post(self, request):
         try:
-            result = ml_reload_faces()
+            result = ml_reload_faces(embeddings=collect_db_face_embeddings())
         except MLServiceError as exc:
             return Response({"detail": str(exc)}, status=exc.status_code or 503)
         return Response(result)

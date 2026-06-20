@@ -151,13 +151,30 @@ class DetectionEvent(models.Model):
     camera = models.ForeignKey(Camera, on_delete=models.CASCADE, related_name="detection_events")
     class_name = models.CharField(max_length=80)
     label = models.CharField(max_length=120)
+    employee_name = models.CharField(
+        max_length=150,
+        blank=True,
+        default="",
+        help_text="Recognized staff name when a person/face is identified; empty for other objects.",
+    )
+    personal_number = models.CharField(
+        max_length=50,
+        blank=True,
+        default="",
+        help_text="Recognized staff personal number when a person/face is identified.",
+    )
     confidence = models.FloatField()
     bbox = models.JSONField(default=list)
     is_alert = models.BooleanField(default=False)
     clip = models.FileField(
         upload_to="detection_clips/%Y/%m/%d/",
         blank=True,
-        help_text="Short MP4 captured when this detection was saved (5–10 s).",
+        help_text="JPEG snapshot captured when this detection was saved.",
+    )
+    clip_thumb = models.FileField(
+        upload_to="detection_clips/%Y/%m/%d/",
+        blank=True,
+        help_text="Small JPEG thumbnail for the detection log table.",
     )
     clip_status = models.CharField(
         max_length=16,
