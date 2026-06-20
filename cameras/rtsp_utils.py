@@ -54,3 +54,38 @@ def build_rtsp_url_from_nvr(nvr: Nvr, channel: int) -> str:
 
 def build_rtsp_url_for_preview(nvr: Nvr, channel: int) -> str:
     return build_rtsp_url_from_nvr(nvr, channel)
+
+
+def nvr_substream_path(nvr: Nvr, channel: int) -> str:
+    """Lower-bandwidth substream path (separate RTSP session from ML main stream)."""
+    ch = int(channel)
+    brand = nvr.brand
+
+    if brand == NvrBrand.HIKVISION:
+        stream_id = ch if ch >= 100 else ch * 100 + 2
+        if ch >= 100 and ch % 100 == 1:
+            stream_id = ch + 1
+        return f"/Streaming/Channels/{stream_id}"
+
+    if brand == NvrBrand.DAHUA:
+        logical = ch if ch <= 64 else ch
+        return f"/cam/realmonitor?channel={logical}&subtype=1"
+
+    if brand == NvrBrand.UNIVIEW:
+        logical = ch if ch <= 64 else ch
+        return f"/media/video{logical}/substream"
+
+    stream_id = ch if ch >= 100 else ch * 100 + 2
+    return f"/Streaming/Channels/{stream_id}"
+
+
+def build_rtsp_substream_url_from_nvr(nvr: Nvr, channel: int) -> str:
+    ip = (nvr.ip_address or "").strip()
+    if not ip:
+        return ""
+    user_enc, pass_enc = _encode_credentials(nvr.username, nvr.password)
+    port = int(nvr.port or 554)
+    path = nvr_substream_path(nvr, channel)
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return f"rtsp://{user_enc}:{pass_enc}@{ip}:{port}{path}"

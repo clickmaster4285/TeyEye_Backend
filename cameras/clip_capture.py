@@ -7,8 +7,10 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 from typing import TYPE_CHECKING
 
+import requests
 from django.conf import settings
 from django.core.files import File
 from django.db import close_old_connections
@@ -16,12 +18,16 @@ from django.db import close_old_connections
 from .stream_utils import ffmpeg_path
 
 if TYPE_CHECKING:
-    from .models import DetectionEvent
+    from .models import Camera, DetectionEvent
 
 logger = logging.getLogger(__name__)
 
 _camera_clip_locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
+_camera_queues: dict[int, deque[int]] = {}
+_queue_guard = threading.Lock()
+_active_queue_workers: set[int] = set()
+_global_clip_semaphore = threading.Semaphore(1)
 
 
 def _clip_enabled() -> bool:
@@ -35,6 +41,14 @@ def _clip_duration_sec() -> int:
     except (TypeError, ValueError):
         duration = 7
     return min(10, max(5, duration))
+
+
+def _clip_fps() -> int:
+    raw = getattr(settings, "CAMERA_STREAM_FPS", 25)
+    try:
+        return max(8, min(30, int(raw)))
+    except (TypeError, ValueError):
+        return 25
 
 
 def _update_clip_status(event_id: int, status: str) -> None:
@@ -53,12 +67,18 @@ def _camera_lock(camera_id: int) -> threading.Lock:
         return lock
 
 
-def _stream_for_clip(camera) -> tuple[str, list[str]]:
-    stream_url = camera.effective_stream_url()
-    if not stream_url:
-        raise ValueError(f"Camera {camera.pk} has no stream URL.")
-    extra = ["-rtsp_transport", "tcp"] if camera.is_rtsp else []
-    return stream_url, extra
+def _ml_mjpeg_url(camera) -> str | None:
+    try:
+        from ml.client import ml_live_mjpeg_url, ml_service_enabled
+    except ImportError:
+        return None
+    if not ml_service_enabled():
+        return None
+    return ml_live_mjpeg_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
+
+
+def _rtsp_input_extra() -> list[str]:
+    return ["-rtsp_transport", "tcp"]
 
 
 def _display_class(event: DetectionEvent) -> str:
@@ -151,14 +171,124 @@ def _draw_detection_on_frame(frame, event: DetectionEvent):
     return output
 
 
-def _record_raw_clip(stream_url: str, input_extra: list[str], raw_path: str, duration: int) -> bool:
+def _reencode_h264(source_path: str, out_path: str) -> bool:
     cmd = [
         ffmpeg_path(),
         "-nostdin",
         "-hide_banner",
         "-loglevel",
         "error",
-        *input_extra,
+        "-y",
+        "-i",
+        source_path,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "23",
+        "-an",
+        "-movflags",
+        "+faststart",
+        out_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and os.path.isfile(out_path) and os.path.getsize(out_path) > 0
+
+
+def _record_clip_from_mjpeg(mjpeg_url: str, event: DetectionEvent, out_path: str, duration: int) -> bool:
+    """Record from ML annotated MJPEG (reuses the open RTSP session)."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        logger.warning("OpenCV not available for MJPEG clip capture")
+        return False
+
+    fps = _clip_fps()
+    min_frames = max(4, duration)
+    writer = None
+    frames = 0
+    temp_cv = f"{out_path}.cv.mp4"
+    record_start: float | None = None
+    warmup_deadline = time.monotonic() + 15
+
+    try:
+        with requests.get(mjpeg_url, stream=True, timeout=(10, 10)) as resp:
+            if resp.status_code != 200:
+                return False
+            buffer = b""
+            for chunk in resp.iter_content(chunk_size=8192):
+                now = time.monotonic()
+                if record_start is None and now > warmup_deadline:
+                    break
+                if record_start is not None and now - record_start >= duration:
+                    break
+                if not chunk:
+                    continue
+                buffer += chunk
+                while True:
+                    start = buffer.find(b"\xff\xd8")
+                    end = buffer.find(b"\xff\xd9")
+                    if start == -1 or end == -1 or end < start:
+                        break
+                    jpg = buffer[start : end + 2]
+                    buffer = buffer[end + 2 :]
+                    arr = np.frombuffer(jpg, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        continue
+                    if record_start is None:
+                        record_start = time.monotonic()
+                    if writer is None:
+                        h, w = frame.shape[:2]
+                        writer = cv2.VideoWriter(
+                            temp_cv,
+                            cv2.VideoWriter_fourcc(*"mp4v"),
+                            fps,
+                            (w, h),
+                        )
+                        if not writer.isOpened():
+                            return False
+                    writer.write(_draw_detection_on_frame(frame, event))
+                    frames += 1
+                    if record_start is not None and time.monotonic() - record_start >= duration:
+                        break
+                if record_start is not None and time.monotonic() - record_start >= duration:
+                    break
+    except requests.RequestException as exc:
+        logger.warning("MJPEG clip capture failed: %s", exc)
+        return False
+    finally:
+        if writer is not None:
+            writer.release()
+
+    if frames < min_frames or not os.path.isfile(temp_cv) or os.path.getsize(temp_cv) <= 0:
+        try:
+            os.remove(temp_cv)
+        except OSError:
+            pass
+        return False
+
+    ok = _reencode_h264(temp_cv, out_path)
+    try:
+        os.remove(temp_cv)
+    except OSError:
+        pass
+    return ok
+
+
+def _record_raw_clip_rtsp(stream_url: str, raw_path: str, duration: int) -> bool:
+    cmd = [
+        ffmpeg_path(),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *_rtsp_input_extra(),
         "-i",
         stream_url,
         "-t",
@@ -176,9 +306,9 @@ def _record_raw_clip(stream_url: str, input_extra: list[str], raw_path: str, dur
         raw_path,
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=duration + 25)
+        proc = subprocess.run(cmd, capture_output=True, timeout=duration * 3 + 30)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        logger.warning("Raw clip ffmpeg failed: %s", exc)
+        logger.warning("Raw RTSP clip ffmpeg failed: %s", exc)
         return False
     return proc.returncode == 0 and os.path.isfile(raw_path) and os.path.getsize(raw_path) > 0
 
@@ -194,7 +324,7 @@ def _burn_overlay_with_opencv(raw_path: str, out_path: str, event: DetectionEven
     if not cap.isOpened():
         return False
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    fps = cap.get(cv2.CAP_PROP_FPS) or _clip_fps()
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     if width <= 0 or height <= 0:
@@ -230,41 +360,46 @@ def _burn_overlay_with_opencv(raw_path: str, out_path: str, event: DetectionEven
             pass
         return False
 
-    cmd = [
-        ffmpeg_path(),
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        temp_cv,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "23",
-        "-an",
-        "-movflags",
-        "+faststart",
-        out_path,
-    ]
-    try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=120)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        proc = None
+    ok = _reencode_h264(temp_cv, out_path)
     try:
         os.remove(temp_cv)
     except OSError:
         pass
+    return ok
 
-    return (
-        proc is not None
-        and proc.returncode == 0
-        and os.path.isfile(out_path)
-        and os.path.getsize(out_path) > 0
-    )
+
+def _capture_rtsp_clip(
+    stream_url: str,
+    event: DetectionEvent,
+    raw_path: str,
+    temp_path: str,
+    duration: int,
+    event_id: int,
+) -> bool:
+    if not stream_url:
+        return False
+    if not _record_raw_clip_rtsp(stream_url, raw_path, duration):
+        return False
+    final_path = temp_path
+    if not _burn_overlay_with_opencv(raw_path, temp_path, event):
+        logger.warning("Overlay failed for event %s — saving raw clip", event_id)
+        final_path = raw_path
+    return os.path.isfile(final_path) and os.path.getsize(final_path) > 0, final_path
+
+
+def _warm_ml_stream(camera) -> None:
+    try:
+        from ml.client import ml_live_detections, ml_service_enabled
+    except ImportError:
+        return
+    if not ml_service_enabled():
+        return
+    for _ in range(3):
+        try:
+            ml_live_detections(camera.stream_key, rtsp_url=camera.effective_stream_url())
+            return
+        except Exception:
+            time.sleep(0.5)
 
 
 def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
@@ -283,38 +418,47 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
     except (Camera.DoesNotExist, DetectionEvent.DoesNotExist):
         return
 
+    if event.clip_status == ClipStatus.SKIPPED:
+        return
+
     if event.clip:
         _update_clip_status(event_id, ClipStatus.READY)
         return
 
     duration = _clip_duration_sec()
-    try:
-        stream_url, input_extra = _stream_for_clip(camera)
-    except ValueError as exc:
-        logger.debug("Clip capture skipped for event %s: %s", event_id, exc)
-        _update_clip_status(event_id, ClipStatus.SKIPPED)
-        return
-
     _update_clip_status(event_id, ClipStatus.RECORDING)
 
     temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
     os.makedirs(temp_dir, exist_ok=True)
     stamp = int(time.time())
-    raw_path = os.path.join(temp_dir, f"event_{event_id}_{stamp}_raw.mp4")
     temp_path = os.path.join(temp_dir, f"event_{event_id}_{stamp}.mp4")
+    raw_path = os.path.join(temp_dir, f"event_{event_id}_{stamp}_raw.mp4")
 
     try:
-        if not _record_raw_clip(stream_url, input_extra, raw_path, duration):
+        saved = False
+        stream_url = camera.effective_stream_url()
+        if stream_url:
+            saved, temp_path = _capture_rtsp_clip(
+                stream_url, event, raw_path, temp_path, duration, event_id
+            )
+
+        if not saved:
+            mjpeg_url = _ml_mjpeg_url(camera)
+            if mjpeg_url:
+                _warm_ml_stream(camera)
+                saved = _record_clip_from_mjpeg(mjpeg_url, event, temp_path, duration)
+
+        if not saved and not stream_url:
+            logger.debug("Clip capture skipped for event %s: no stream URL", event_id)
+            _update_clip_status(event_id, ClipStatus.SKIPPED)
+            return
+
+        if not saved:
             _update_clip_status(event_id, ClipStatus.FAILED)
             return
 
-        final_path = temp_path
-        if not _burn_overlay_with_opencv(raw_path, temp_path, event):
-            logger.warning("Overlay failed for event %s — saving raw clip", event_id)
-            final_path = raw_path
-
         filename = f"event_{event_id}.mp4"
-        with open(final_path, "rb") as fh:
+        with open(temp_path, "rb") as fh:
             event.clip.save(filename, File(fh), save=True)
         _update_clip_status(event_id, ClipStatus.READY)
         logger.info(
@@ -335,47 +479,60 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
                 pass
 
 
-def _skip_stale_pending_clips() -> None:
-    from datetime import timedelta
+def _process_camera_queue(camera_id: int) -> None:
+    while True:
+        with _queue_guard:
+            queue = _camera_queues.get(camera_id)
+            if not queue:
+                _active_queue_workers.discard(camera_id)
+                return
+            event_id = queue.popleft()
 
-    from django.utils import timezone
+        with _global_clip_semaphore:
+            with _camera_lock(camera_id):
+                capture_detection_clip_sync(camera_id, event_id)
 
+
+def _enqueue_clip(camera_id: int, event_id: int) -> None:
+    with _queue_guard:
+        queue = _camera_queues.setdefault(camera_id, deque())
+        if event_id in queue:
+            return
+        queue.append(event_id)
+        if camera_id not in _active_queue_workers:
+            _active_queue_workers.add(camera_id)
+            thread = threading.Thread(
+                target=_process_camera_queue,
+                args=(camera_id,),
+                daemon=True,
+                name=f"det-clip-q-{camera_id}",
+            )
+            thread.start()
+
+
+def requeue_pending_clips() -> int:
+    """Enqueue pending clips left from a previous run."""
     from .models import ClipStatus, DetectionEvent
 
-    cutoff = timezone.now() - timedelta(minutes=15)
-    DetectionEvent.objects.filter(
-        clip_status=ClipStatus.PENDING,
-        created_at__lt=cutoff,
-    ).update(clip_status=ClipStatus.FAILED)
-
-
-def _skip_superseded_pending_clips(camera_id: int, event_id: int) -> None:
-    from .models import ClipStatus, DetectionEvent
-
-    DetectionEvent.objects.filter(
-        camera_id=camera_id,
-        clip_status=ClipStatus.PENDING,
-    ).exclude(pk=event_id).update(clip_status=ClipStatus.SKIPPED)
+    close_old_connections()
+    rows = list(
+        DetectionEvent.objects.filter(clip_status=ClipStatus.PENDING, clip="")
+        .order_by("created_at")
+        .values_list("camera_id", "id")
+    )
+    for camera_id, event_id in rows:
+        _enqueue_clip(camera_id, event_id)
+    if rows:
+        logger.info("[clip-capture] Re-queued %s pending clip(s)", len(rows))
+    return len(rows)
 
 
 def schedule_detection_clip(camera_id: int, event_id: int) -> None:
-    """Capture clip in a background thread; one recording at a time per camera."""
+    """Queue clip capture; every detection is recorded in order per camera."""
     from .models import ClipStatus
 
     if not _clip_enabled():
         _update_clip_status(event_id, ClipStatus.SKIPPED)
         return
 
-    _skip_stale_pending_clips()
-    _skip_superseded_pending_clips(camera_id, event_id)
-
-    def _run() -> None:
-        with _camera_lock(camera_id):
-            capture_detection_clip_sync(camera_id, event_id)
-
-    thread = threading.Thread(
-        target=_run,
-        daemon=True,
-        name=f"det-clip-{event_id}",
-    )
-    thread.start()
+    _enqueue_clip(camera_id, event_id)

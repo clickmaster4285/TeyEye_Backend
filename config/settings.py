@@ -267,6 +267,8 @@ DETECTION_WORKER_CAMERA_REFRESH_SEC = int(os.getenv("DETECTION_WORKER_CAMERA_REF
 # Short MP4 clip saved with each new detection event (seconds, 5–10)
 DETECTION_CLIP_ENABLED = os.getenv("DETECTION_CLIP_ENABLED", "true").strip().lower() in ("true", "1", "yes")
 DETECTION_CLIP_SECONDS = int(os.getenv("DETECTION_CLIP_SECONDS", "7"))
+# Min seconds before the same label/class on one camera is saved again (0 = save every poll)
+DETECTION_DEDUP_SECONDS = int(os.getenv("DETECTION_DEDUP_SECONDS", "5"))
 
 # CCTV stream FPS for ffmpeg proxy (RTSP URLs are built dynamically from NVR DB records)
 CAMERA_STREAM_FPS = int(os.getenv("ML_LIVE_STREAM_FPS", "25"))

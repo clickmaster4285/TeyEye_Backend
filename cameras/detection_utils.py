@@ -12,7 +12,14 @@ from .clip_capture import schedule_detection_clip
 from .models import Camera, ClipStatus, DetectionEvent
 
 DEFAULT_MIN_CONFIDENCE = 0.25
-DEFAULT_DEDUP_SECONDS = 45
+
+
+def _dedup_seconds() -> int:
+    raw = getattr(settings, "DETECTION_DEDUP_SECONDS", 5)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 5
 
 
 def save_detection_batch(
@@ -20,13 +27,14 @@ def save_detection_batch(
     detections: list[dict[str, Any]],
     *,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
-    dedup_seconds: int = DEFAULT_DEDUP_SECONDS,
+    dedup_seconds: int | None = None,
 ) -> int:
     """Save detections from a live ML poll. Returns number of new rows created."""
     if not detections:
         return 0
 
-    since = timezone.now() - timedelta(seconds=max(1, dedup_seconds))
+    dedup_window = _dedup_seconds() if dedup_seconds is None else max(0, dedup_seconds)
+    since = timezone.now() - timedelta(seconds=max(1, dedup_window)) if dedup_window > 0 else None
     saved = 0
 
     for det in detections:
@@ -41,7 +49,7 @@ def save_detection_batch(
         if confidence < min_confidence:
             continue
 
-        if DetectionEvent.objects.filter(
+        if since is not None and DetectionEvent.objects.filter(
             camera=camera,
             label=label,
             class_name=class_name,
