@@ -38,7 +38,7 @@ def _coco_max_class_id() -> int:
 
 def is_coco_detection(det: dict[str, Any]) -> bool:
     """True for generic COCO model hits (e.g. chair, person) — not custom specialist classes."""
-    tag = str(det.get("model_tag") or det.get("model") or "").strip().lower()
+    tag = str(det.get("model_tag") or "").strip().lower()
     if tag in ("custom", "smoke"):
         return False
     if tag == "coco":

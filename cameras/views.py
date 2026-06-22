@@ -263,7 +263,7 @@ class CameraViewSet(viewsets.ModelViewSet):
         camera = self.get_object()
         if not ml_service_enabled():
             return Response(
-                {"detail": "ML service is not reachable. Start ml_services: python api_server.py"},
+                {"detail": "ML service is not running. Restart the backend to auto-start models."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         try:
@@ -303,7 +303,7 @@ class CameraViewSet(viewsets.ModelViewSet):
         camera = self.get_object()
         if not ml_service_enabled():
             return Response(
-                {"detail": "ML service is not reachable. Start ml_services: python api_server.py"},
+                {"detail": "ML service is not running. Restart the backend to auto-start models."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
