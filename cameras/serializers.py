@@ -80,8 +80,9 @@ class NvrSerializer(serializers.ModelSerializer):
 class CameraSerializer(serializers.ModelSerializer):
     ml_enabled = serializers.BooleanField(read_only=True)
     is_rtsp = serializers.BooleanField(read_only=True)
-    stream_path = serializers.SerializerMethodField()
-    ml_live_stream_path = serializers.SerializerMethodField()
+    ml_stream_key = serializers.CharField(source="stream_key", read_only=True)
+    ml_live_stream_url = serializers.SerializerMethodField()
+    raw_stream_url = serializers.SerializerMethodField()
     purpose_label = serializers.CharField(source="get_purpose_display", read_only=True)
     site_code = serializers.CharField(source="nvr.site.code", read_only=True)
     site_name = serializers.CharField(source="nvr.site.name", read_only=True)
@@ -110,8 +111,9 @@ class CameraSerializer(serializers.ModelSerializer):
             "is_active",
             "ml_enabled",
             "is_rtsp",
-            "stream_path",
-            "ml_live_stream_path",
+            "ml_stream_key",
+            "ml_live_stream_url",
+            "raw_stream_url",
             "created_at",
             "updated_at",
         ]
@@ -121,7 +123,6 @@ class CameraSerializer(serializers.ModelSerializer):
             "location",
             "created_at",
             "updated_at",
-            "stream_path",
             "site_code",
             "site_name",
             "nvr_name",
@@ -131,13 +132,19 @@ class CameraSerializer(serializers.ModelSerializer):
     def get_channel_label(self, obj: Camera) -> str:
         return f"Channel {obj.channel}"
 
-    def get_stream_path(self, obj: Camera) -> str:
-        return f"/api/cameras/streams/{obj.pk}/mjpeg/"
-
-    def get_ml_live_stream_path(self, obj: Camera) -> str:
+    def get_ml_live_stream_url(self, obj: Camera) -> str:
         if not obj.is_active or not obj.nvr_id:
             return ""
-        return f"/api/cameras/{obj.pk}/ml-live/mjpeg/"
+        from ml.client import ml_live_mjpeg_public_url
+
+        return ml_live_mjpeg_public_url(obj.stream_key)
+
+    def get_raw_stream_url(self, obj: Camera) -> str:
+        if not obj.is_active or not obj.nvr_id:
+            return ""
+        from ml.client import ml_live_mjpeg_raw_public_url
+
+        return ml_live_mjpeg_raw_public_url(obj.stream_key)
 
 
 class CameraWriteSerializer(serializers.ModelSerializer):

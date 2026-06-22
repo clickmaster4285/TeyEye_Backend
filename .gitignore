@@ -33,9 +33,7 @@ local_settings.py
 .env.*
 !.env.example
 
-# ML service / local tools (weights, models, logs — not committed)
-ml_service/
-ml_services/
+# ML service lives at repo root (ml_services/) — not under backend/
 tools/ffmpeg/bin/
 
 # Test / coverage

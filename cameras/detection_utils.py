@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 from typing import Any
 
@@ -10,10 +11,75 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .clip_capture import schedule_detection_clip
-from .models import Camera, ClipStatus, DetectionEvent
+from .models import Camera, CameraPurpose, ClipStatus, DetectionEvent
 
 DEFAULT_MIN_CONFIDENCE = 0.25
 _GENERIC_EMPLOYEE_LABELS = frozenset({"unknown", "person", "face", ""})
+_ANPR_CLASS_NAMES = frozenset(
+    {
+        "car",
+        "truck",
+        "bus",
+        "motorcycle",
+        "bicycle",
+        "vehicle",
+        "license plate",
+        "number plate",
+    }
+)
+
+
+def _coco_max_class_id() -> int:
+    try:
+        return int(os.getenv("ML_COCO_MAX_CLASS_ID", "79"))
+    except (TypeError, ValueError):
+        return 79
+
+
+def is_coco_detection(det: dict[str, Any]) -> bool:
+    """True for generic COCO model hits (e.g. chair, person) — not custom specialist classes."""
+    tag = str(det.get("model_tag") or "").strip().lower()
+    if tag in ("custom", "smoke"):
+        return False
+    if tag == "coco":
+        return True
+    try:
+        cls_id = int(det.get("class_id", -1))
+    except (TypeError, ValueError):
+        cls_id = -1
+    return 0 <= cls_id <= _coco_max_class_id()
+
+
+def filter_detections_for_camera(camera: Camera, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only detections relevant to this camera's AI purpose."""
+    purpose = camera.purpose
+    kept: list[dict[str, Any]] = []
+
+    for det in detections or []:
+        if det.get("alert"):
+            kept.append(det)
+            continue
+
+        cls = str(det.get("class_name") or det.get("label") or "").strip().lower()
+
+        if purpose == CameraPurpose.OBJECT_DETECTION:
+            if not is_coco_detection(det):
+                kept.append(det)
+            continue
+
+        if purpose in (CameraPurpose.FACE_RECOGNITION, CameraPurpose.ATTENDANCE):
+            if cls in ("person", "face"):
+                kept.append(det)
+            continue
+
+        if purpose == CameraPurpose.ANPR:
+            if cls in _ANPR_CLASS_NAMES:
+                kept.append(det)
+            continue
+
+        kept.append(det)
+
+    return kept
 
 
 def resolve_employee_name(label: str, class_name: str) -> str:
@@ -71,6 +137,7 @@ def save_detection_batch(
     dedup_seconds: int | None = None,
 ) -> int:
     """Save detections from a live ML poll. Returns number of new rows created."""
+    detections = filter_detections_for_camera(camera, detections)
     if not detections:
         return 0
 

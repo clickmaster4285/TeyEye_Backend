@@ -1,4 +1,4 @@
-"""HTTP client for the ML inference service (backend/ml_service/api_server.py)."""
+"""HTTP client for the external ML inference service (ml_services/api_server.py)."""
 
 from __future__ import annotations
 
@@ -47,10 +47,9 @@ def _request(method: str, path: str, *, timeout: float | tuple[float, float] | N
     try:
         return requests.request(method, url, timeout=req_timeout, **kwargs)
     except requests.RequestException as exc:
-        ml_root = getattr(settings, "ML_ROOT_PATH", "ml_service")
         raise MLServiceError(
-            f"ML service unreachable at {_base_url()}. Restart Django or run "
-            f"python api_server.py in {ml_root}. ({exc})",
+            f"ML service unreachable at {_base_url()}. "
+            f"Start the ML server: cd ml_services && python api_server.py ({exc})",
             503,
         ) from exc
 
@@ -147,6 +146,64 @@ def ml_live_mjpeg_url(stream_key: str, rtsp_url: str | None = None) -> str:
     if not params:
         return base
     return f"{base}?{urlencode(params)}"
+
+
+def ml_live_mjpeg_public_url(stream_key: str) -> str:
+    """Direct browser URL — no RTSP credentials, camera must be registered on ML service."""
+    from django.conf import settings
+
+    key = (stream_key or "").strip()
+    base = getattr(settings, "ML_SERVICE_PUBLIC_URL", "").strip().rstrip("/")
+    if not base or not key:
+        return ""
+    return f"{base}/live/cam/{key}/mjpeg"
+
+
+def ml_live_mjpeg_raw_public_url(stream_key: str) -> str:
+    from django.conf import settings
+
+    key = (stream_key or "").strip()
+    base = getattr(settings, "ML_SERVICE_PUBLIC_URL", "").strip().rstrip("/")
+    if not base or not key:
+        return ""
+    return f"{base}/live/cam/{key}/mjpeg/raw"
+
+
+def ml_live_mjpeg_raw_url(stream_key: str, rtsp_url: str | None = None) -> str:
+    key = (stream_key or "").strip()
+    base = f"{_base_url()}/live/cam/{key}/mjpeg/raw"
+    params = _live_rtsp_params(rtsp_url)
+    if not params:
+        return base
+    return f"{base}?{urlencode(params)}"
+
+
+def ml_register_cameras_bulk(entries: list[dict[str, str]]) -> dict[str, Any]:
+    payload = [
+        {
+            "key": str(item["key"]).strip(),
+            "rtsp_url": str(item["rtsp_url"]).strip(),
+            **({"purpose": str(item["purpose"]).strip()} if str(item.get("purpose") or "").strip() else {}),
+        }
+        for item in entries
+        if str(item.get("key") or "").strip() and str(item.get("rtsp_url") or "").strip()
+    ]
+    if not payload:
+        return {"registered": 0, "total": 0}
+    res = _request("POST", "/live/register/bulk", json=payload)
+    if res.status_code != 200:
+        raise MLServiceError("Failed to register cameras with ML service.", res.status_code)
+    return res.json()
+
+
+def ml_unregister_camera(stream_key: str) -> dict[str, Any]:
+    key = (stream_key or "").strip()
+    if not key:
+        return {"removed": False}
+    res = _request("DELETE", f"/live/cam/{key}/register")
+    if res.status_code != 200:
+        raise MLServiceError(f"Failed to unregister camera {key}.", res.status_code)
+    return res.json()
 
 
 def ml_validate_human_face(file_bytes: bytes, filename: str = "face.jpg") -> dict[str, Any]:

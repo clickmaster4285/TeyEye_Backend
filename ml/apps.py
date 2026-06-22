@@ -19,10 +19,6 @@ class MlConfig(AppConfig):
         if "migrate" in sys.argv or "makemigrations" in sys.argv:
             return
 
-        from .autostart import maybe_start_ml_service
-
-        maybe_start_ml_service()
-
         def _deferred_face_reload() -> None:
             try:
                 close_old_connections = __import__(
@@ -41,6 +37,9 @@ class MlConfig(AppConfig):
                         result.get("known_faces", 0),
                         result.get("db_embeddings", 0),
                     )
+                from .camera_sync import sync_cameras_to_ml
+
+                sync_cameras_to_ml()
             except Exception:
                 logger.exception("[face-sync] Could not push face embeddings to ML")
 
