@@ -60,7 +60,14 @@ def _ml_raw_mjpeg_url(camera) -> str | None:
 
 
 def _rtsp_input_extra() -> list[str]:
-    return ["-rtsp_transport", "tcp"]
+    return [
+        "-rtsp_transport",
+        "tcp",
+        "-fflags",
+        "+discardcorrupt",
+        "-err_detect",
+        "ignore_err",
+    ]
 
 
 def _display_class(event: DetectionEvent) -> str:
