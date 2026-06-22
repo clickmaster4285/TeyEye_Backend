@@ -374,6 +374,8 @@ def _process_camera_queue(camera_id: int) -> None:
 
 
 def _enqueue_clip(camera_id: int, event_id: int) -> None:
+    from .models import ClipStatus
+
     with _queue_guard:
         queue = _camera_queues.setdefault(camera_id, deque())
         if event_id in queue:
