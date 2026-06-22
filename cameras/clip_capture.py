@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 import requests
 from django.conf import settings
-from django.core.files import File
+from django.core.files.base import ContentFile
 from django.db import close_old_connections
 
 from .stream_utils import ffmpeg_path
@@ -293,10 +293,6 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
 
     _update_clip_status(event_id, ClipStatus.RECORDING)
 
-    temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
-    os.makedirs(temp_dir, exist_ok=True)
-    temp_path = os.path.join(temp_dir, f"event_{event_id}_{int(time.time())}.jpg")
-
     try:
         import cv2
     except ImportError:
@@ -322,14 +318,20 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         return
 
     annotated = _draw_detection_on_frame(frame, event)
-    if not cv2.imwrite(temp_path, annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 88]):
+    ok, encoded = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
+    if not ok or encoded is None:
+        logger.warning("JPEG encode failed for detection event %s", event_id)
         _update_clip_status(event_id, ClipStatus.FAILED)
         return
 
     try:
+        event.refresh_from_db(fields=["clip", "clip_status"])
+        if event.clip:
+            _update_clip_status(event_id, ClipStatus.READY)
+            return
+
         filename = f"event_{event_id}.jpg"
-        with open(temp_path, "rb") as fh:
-            event.clip.save(filename, File(fh), save=True)
+        event.clip.save(filename, ContentFile(encoded.tobytes()), save=True)
         _update_clip_status(event_id, ClipStatus.READY)
         logger.info(
             "Saved detection snapshot for event %s (%s) class=%s",
@@ -340,12 +342,6 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
     except Exception:
         logger.exception("Failed to save snapshot for detection event %s", event_id)
         _update_clip_status(event_id, ClipStatus.FAILED)
-    finally:
-        try:
-            if os.path.isfile(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
 
 
 def _process_camera_queue(camera_id: int) -> None:
