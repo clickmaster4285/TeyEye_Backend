@@ -1,4 +1,4 @@
-"""HTTP client for the ML inference service (backend/ml_service/api_server.py)."""
+"""HTTP client for the external ML inference service (ml_services/api_server.py)."""
 
 from __future__ import annotations
 
@@ -47,10 +47,9 @@ def _request(method: str, path: str, *, timeout: float | tuple[float, float] | N
     try:
         return requests.request(method, url, timeout=req_timeout, **kwargs)
     except requests.RequestException as exc:
-        ml_root = getattr(settings, "ML_ROOT_PATH", "ml_service")
         raise MLServiceError(
-            f"ML service unreachable at {_base_url()}. Restart Django or run "
-            f"python api_server.py in {ml_root}. ({exc})",
+            f"ML service unreachable at {_base_url()}. "
+            f"Start the ML server: cd ml_services && python api_server.py ({exc})",
             503,
         ) from exc
 

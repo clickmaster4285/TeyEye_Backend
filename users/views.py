@@ -383,8 +383,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     "error": (
-                        "ML service is not configured. Set ML_SERVICE_URL in backend .env "
-                        "or enable ML_AUTO_START (inference server: ml_service/api_server.py)."
+                        "ML service is not configured. Set ML_SERVICE_URL in backend/.env "
+                        "and run the inference server: cd ml_services && python api_server.py"
                     )
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,

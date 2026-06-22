@@ -19,10 +19,6 @@ class MlConfig(AppConfig):
         if "migrate" in sys.argv or "makemigrations" in sys.argv:
             return
 
-        from .autostart import maybe_start_ml_service
-
-        maybe_start_ml_service()
-
         def _deferred_face_reload() -> None:
             try:
                 close_old_connections = __import__(

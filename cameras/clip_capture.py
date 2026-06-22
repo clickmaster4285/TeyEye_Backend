@@ -14,6 +14,7 @@ import requests
 from django.conf import settings
 from django.core.files import File
 from django.db import close_old_connections
+from django.utils import timezone
 
 from .stream_utils import ffmpeg_path
 
@@ -27,6 +28,8 @@ _locks_guard = threading.Lock()
 _camera_queues: dict[int, deque[int]] = {}
 _queue_guard = threading.Lock()
 _active_queue_workers: set[int] = set()
+_MAX_QUEUE_PER_CAMERA = 3
+_MAX_CLIP_AGE_SEC = 120.0
 
 
 def _clip_enabled() -> bool:
@@ -51,11 +54,15 @@ def _camera_lock(camera_id: int) -> threading.Lock:
 
 def _ml_raw_mjpeg_url(camera) -> str | None:
     try:
-        from ml.client import ml_live_mjpeg_raw_url, ml_service_enabled
+        from ml.client import ml_live_mjpeg_raw_public_url, ml_live_mjpeg_raw_url, ml_service_enabled
     except ImportError:
         return None
     if not ml_service_enabled():
         return None
+    # Prefer registered camera URL (no RTSP creds in query) when synced to ML.
+    public = ml_live_mjpeg_raw_public_url(camera.stream_key)
+    if public:
+        return public
     return ml_live_mjpeg_raw_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
 
 
@@ -291,6 +298,12 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         _update_clip_status(event_id, ClipStatus.READY)
         return
 
+    age_sec = (timezone.now() - event.created_at).total_seconds()
+    if age_sec > _MAX_CLIP_AGE_SEC:
+        _update_clip_status(event_id, ClipStatus.SKIPPED)
+        logger.debug("Skipped stale snapshot for event %s (%.0fs old)", event_id, age_sec)
+        return
+
     _update_clip_status(event_id, ClipStatus.RECORDING)
 
     temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
@@ -304,15 +317,14 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         return
 
     frame = None
-    stream_url = camera.effective_stream_url()
-    if stream_url:
-        frame = _read_rtsp_snapshot(stream_url)
+    raw_mjpeg_url = _ml_raw_mjpeg_url(camera)
+    if raw_mjpeg_url:
+        _warm_ml_stream(camera)
+        frame = _read_mjpeg_snapshot(raw_mjpeg_url)
 
-    if frame is None:
-        raw_mjpeg_url = _ml_raw_mjpeg_url(camera)
-        if raw_mjpeg_url:
-            _warm_ml_stream(camera)
-            frame = _read_mjpeg_snapshot(raw_mjpeg_url)
+    stream_url = camera.effective_stream_url()
+    if frame is None and stream_url:
+        frame = _read_rtsp_snapshot(stream_url)
 
     if frame is None:
         if not stream_url and not _ml_raw_mjpeg_url(camera):
@@ -366,6 +378,9 @@ def _enqueue_clip(camera_id: int, event_id: int) -> None:
         queue = _camera_queues.setdefault(camera_id, deque())
         if event_id in queue:
             return
+        while len(queue) >= _MAX_QUEUE_PER_CAMERA:
+            dropped = queue.popleft()
+            _update_clip_status(dropped, ClipStatus.SKIPPED)
         queue.append(event_id)
         if camera_id not in _active_queue_workers:
             _active_queue_workers.add(camera_id)
@@ -379,7 +394,7 @@ def _enqueue_clip(camera_id: int, event_id: int) -> None:
 
 
 def requeue_pending_clips(*, limit: int = 200) -> int:
-    """Enqueue pending snapshots left from a previous run."""
+    """Enqueue recent pending snapshots; skip very old backlog."""
     from .models import ClipStatus, DetectionEvent
 
     close_old_connections()
@@ -388,9 +403,18 @@ def requeue_pending_clips(*, limit: int = 200) -> int:
         clip="",
     ).update(clip_status=ClipStatus.PENDING)
 
+    stale_cutoff = timezone.now() - timezone.timedelta(seconds=_MAX_CLIP_AGE_SEC)
+    skipped = DetectionEvent.objects.filter(
+        clip_status=ClipStatus.PENDING,
+        clip="",
+        created_at__lt=stale_cutoff,
+    ).update(clip_status=ClipStatus.SKIPPED)
+    if skipped:
+        logger.info("[snapshot-capture] Skipped %s stale pending snapshot(s)", skipped)
+
     rows = list(
         DetectionEvent.objects.filter(clip_status=ClipStatus.PENDING, clip="")
-        .order_by("created_at")
+        .order_by("-created_at")
         .values_list("camera_id", "id")[:limit]
     )
     for camera_id, event_id in rows:
