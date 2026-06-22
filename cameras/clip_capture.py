@@ -49,14 +49,14 @@ def _camera_lock(camera_id: int) -> threading.Lock:
         return lock
 
 
-def _ml_mjpeg_url(camera) -> str | None:
+def _ml_raw_mjpeg_url(camera) -> str | None:
     try:
-        from ml.client import ml_live_mjpeg_url, ml_service_enabled
+        from ml.client import ml_live_mjpeg_raw_url, ml_service_enabled
     except ImportError:
         return None
     if not ml_service_enabled():
         return None
-    return ml_live_mjpeg_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
+    return ml_live_mjpeg_raw_url(camera.stream_key, rtsp_url=camera.effective_stream_url())
 
 
 def _rtsp_input_extra() -> list[str]:
@@ -304,17 +304,18 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         return
 
     frame = None
-    mjpeg_url = _ml_mjpeg_url(camera)
-    if mjpeg_url:
-        _warm_ml_stream(camera)
-        frame = _read_mjpeg_snapshot(mjpeg_url)
-
     stream_url = camera.effective_stream_url()
-    if frame is None and stream_url:
+    if stream_url:
         frame = _read_rtsp_snapshot(stream_url)
 
     if frame is None:
-        if not stream_url and not mjpeg_url:
+        raw_mjpeg_url = _ml_raw_mjpeg_url(camera)
+        if raw_mjpeg_url:
+            _warm_ml_stream(camera)
+            frame = _read_mjpeg_snapshot(raw_mjpeg_url)
+
+    if frame is None:
+        if not stream_url and not _ml_raw_mjpeg_url(camera):
             _update_clip_status(event_id, ClipStatus.SKIPPED)
         else:
             _update_clip_status(event_id, ClipStatus.FAILED)

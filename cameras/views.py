@@ -1,4 +1,4 @@
-"""Camera registry, RTSP MJPEG proxy, and ML detection on camera frames."""
+"""Camera registry and ML detection on camera frames."""
 
 from __future__ import annotations
 
@@ -14,12 +14,17 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-import requests
-
-from ml.client import MLServiceError, ml_detect_image, ml_live_detections, ml_live_mjpeg_url, ml_service_enabled
+from ml.client import (
+    MLServiceError,
+    ml_detect_image,
+    ml_live_detections,
+    ml_live_mjpeg_public_url,
+    ml_live_mjpeg_raw_public_url,
+    ml_service_enabled,
+)
 
 from .clip_capture import schedule_detection_clip
-from .detection_utils import resolve_staff_identity
+from .detection_utils import filter_detections_for_camera, resolve_staff_identity
 from .detection_utils import save_detection_batch
 from .search_utils import apply_detection_search
 from .models import Camera, CameraPurpose, ClipStatus, DetectionEvent, Nvr, Site
@@ -54,11 +59,6 @@ def _request_has_valid_auth(request) -> bool:
     if not key:
         return False
     return Token.objects.filter(key=key).exists()
-
-
-def _mjpeg_stream_url(camera: Camera) -> str | None:
-    url = camera.effective_stream_url()
-    return url if url else None
 
 
 def _capture_stream_url(camera: Camera) -> str | None:
@@ -273,6 +273,7 @@ class CameraViewSet(viewsets.ModelViewSet):
             return Response({"detail": str(exc)}, status=exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE)
 
         detections = result.get("detections") or []
+        detections = filter_detections_for_camera(camera, detections)
         save_param = request.query_params.get("save", "true").lower()
         saved_count = 0
         if save_param in ("true", "1", "yes") and detections:
@@ -325,7 +326,7 @@ class CameraViewSet(viewsets.ModelViewSet):
         except MLServiceError as exc:
             return Response({"detail": str(exc)}, status=exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        detections = result.get("detections") or []
+        detections = filter_detections_for_camera(camera, result.get("detections") or [])
         saved = []
         clip_enabled = bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
         for det in detections:
@@ -391,116 +392,19 @@ class CameraStreamListView(APIView):
                     "purpose_label": cam.get_purpose_display(),
                     "ml_enabled": cam.ml_enabled,
                     "is_rtsp": cam.is_rtsp,
-                    "stream_path": f"/api/cameras/streams/{cam.pk}/mjpeg/",
-                    "ml_live_stream_path": f"/api/cameras/{cam.pk}/ml-live/mjpeg/",
+                    "ml_stream_key": cam.stream_key,
+                    "ml_live_stream_url": ml_live_mjpeg_public_url(cam.stream_key),
+                    "raw_stream_url": ml_live_mjpeg_raw_public_url(cam.stream_key),
                 }
             )
 
         return Response(
             {
                 "cameras": cameras,
-                "ffmpeg_available": ffmpeg_available(),
                 "ml_service_enabled": ml_service_enabled(),
+                "ml_service_public_url": getattr(settings, "ML_SERVICE_PUBLIC_URL", ""),
             }
         )
-
-
-class CameraMjpegStreamView(APIView):
-    """Proxy RTSP as multipart MJPEG for <img src>."""
-
-    authentication_classes = []
-    permission_classes = [AllowAny]
-
-    def get(self, request, camera_id: int):
-        if not _request_has_valid_auth(request):
-            return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
-
-        if not ffmpeg_available():
-            return Response(
-                {
-                    "detail": (
-                        "ffmpeg is not installed on the API server. "
-                        "Install ffmpeg or set FFMPEG_PATH in backend/.env."
-                    )
-                },
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        try:
-            cam = Camera.objects.select_related("nvr").get(pk=camera_id, is_active=True)
-            stream_url = _mjpeg_stream_url(cam)
-        except Camera.DoesNotExist:
-            stream_url = None
-
-        if not stream_url:
-            return Response({"detail": "Camera not found or stream URL missing."}, status=status.HTTP_404_NOT_FOUND)
-
-        response = StreamingHttpResponse(
-            generate_mjpeg_frames(stream_url),
-            content_type="multipart/x-mixed-replace; boundary=frame",
-        )
-        response["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response["Pragma"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"
-        return response
-
-
-class CameraMlLiveMjpegView(APIView):
-    """Proxy ML annotated live stream for <img src>."""
-
-    authentication_classes = []
-    permission_classes = [AllowAny]
-
-    def get(self, request, camera_id: int):
-        if not _request_has_valid_auth(request):
-            return Response({"detail": "Authentication required."}, status=status.HTTP_401_UNAUTHORIZED)
-        if not ml_service_enabled():
-            return Response(
-                {"detail": "ML service is not running."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        try:
-            cam = Camera.objects.select_related("nvr").get(pk=camera_id, is_active=True)
-        except Camera.DoesNotExist:
-            return Response({"detail": "Camera not found."}, status=status.HTTP_404_NOT_FOUND)
-
-        stream_url = cam.effective_stream_url()
-        if not stream_url:
-            return Response({"detail": "Could not build stream URL."}, status=status.HTTP_400_BAD_REQUEST)
-
-        ml_url = ml_live_mjpeg_url(cam.stream_key, rtsp_url=stream_url)
-        try:
-            upstream = requests.get(ml_url, stream=True, timeout=(5, 120))
-        except requests.RequestException as exc:
-            return Response(
-                {"detail": f"ML live stream unreachable: {exc}"},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        if upstream.status_code != 200:
-            upstream.close()
-            return Response(
-                {"detail": f"ML live stream error ({upstream.status_code})."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        def generate():
-            try:
-                for chunk in upstream.iter_content(chunk_size=8192):
-                    if chunk:
-                        yield chunk
-            finally:
-                upstream.close()
-
-        response = StreamingHttpResponse(
-            generate(),
-            content_type=upstream.headers.get(
-                "Content-Type", "multipart/x-mixed-replace; boundary=frame"
-            ),
-        )
-        response["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        response["Pragma"] = "no-cache"
-        response["X-Accel-Buffering"] = "no"
-        return response
 
 
 class CameraPreviewMjpegView(APIView):

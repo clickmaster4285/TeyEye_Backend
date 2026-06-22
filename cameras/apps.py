@@ -14,6 +14,8 @@ class CamerasConfig(AppConfig):
         if "migrate" in sys.argv or "makemigrations" in sys.argv:
             return
 
+        from . import signals  # noqa: F401
+
         def _deferred_clip_boot() -> None:
             try:
                 close_old_connections = __import__(

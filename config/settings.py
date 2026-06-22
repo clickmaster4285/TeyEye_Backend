@@ -227,6 +227,10 @@ FFMPEG_PATH = _resolve_ffmpeg_path()
 # ML inference service (backend/ml_service/api_server.py)
 # -----------------------------
 ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://127.0.0.1:8100").strip()
+ML_SERVICE_PUBLIC_URL = os.getenv(
+    "ML_SERVICE_PUBLIC_URL",
+    os.getenv("ML_SERVICE_URL", "http://127.0.0.1:8100"),
+).strip().rstrip("/")
 ML_SERVICE_TIMEOUT = int(os.getenv("ML_SERVICE_TIMEOUT", "60"))
 
 
