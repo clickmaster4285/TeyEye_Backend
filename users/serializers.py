@@ -207,6 +207,16 @@ class UserCreateSerializer(serializers.ModelSerializer):
         return instance
 
 
+# Face vector is stored on Staff but never exposed via API (ML internal only).
+_STAFF_FACE_PRIVATE_FIELDS = (
+    "face_embedding",
+    "face_embedding_dim",
+    "face_embedding_model",
+    "face_identity_label",
+    "face_embedding_profile_key",
+)
+
+
 # -----------------------------
 # Staff Serializer (Full) – all template fields
 # -----------------------------
@@ -217,7 +227,7 @@ class StaffSerializer(serializers.ModelSerializer):
     class Meta:
         model = Staff
         fields = "__all__"
-        read_only_fields = ["created_at"]
+        read_only_fields = ["created_at", *_STAFF_FACE_PRIVATE_FIELDS]
 
     def get_national_id(self, obj):
         return getattr(obj, "national_id", None) or obj.cnic
@@ -233,6 +243,12 @@ class StaffSerializer(serializers.ModelSerializer):
                 "is_active": obj.user.is_active,
             }
         return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for key in _STAFF_FACE_PRIVATE_FIELDS:
+            data.pop(key, None)
+        return data
 
 
 # -----------------------------
@@ -380,7 +396,13 @@ class StaffUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Staff
         fields = "__all__"
-        read_only_fields = ["created_at", "cnic"]
+        read_only_fields = ["created_at", "cnic", *_STAFF_FACE_PRIVATE_FIELDS]
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for key in _STAFF_FACE_PRIVATE_FIELDS:
+            data.pop(key, None)
+        return data
 
 
 # -----------------------------
@@ -430,12 +452,8 @@ class StaffListSerializer(serializers.ModelSerializer):
     def get_face_enrolled(self, obj):
         if not obj.profile_image:
             return False
-        try:
-            from ml.face_sync import staff_needs_face_enrollment
-
-            return not staff_needs_face_enrollment(obj)
-        except Exception:
-            return obj.face_embeddings.filter(is_active=True).exists()
+        emb = obj.face_embedding
+        return isinstance(emb, list) and len(emb) > 0
 
 
 # -----------------------------

@@ -1,4 +1,4 @@
-"""Enroll staff profile photos into DB embeddings and push them to the ML service."""
+"""Enroll staff profile photos into face_embedding on Staff and push vectors to ML."""
 
 from __future__ import annotations
 
@@ -6,9 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from django.core.files.base import ContentFile
-
-from users.models import Staff, StaffFaceEmbedding
+from users.models import Staff
 
 from .client import (
     MLServiceError,
@@ -36,28 +34,32 @@ def staff_profile_image_key(staff: Staff) -> str:
     return str(staff.profile_image.name or "").strip()
 
 
+def staff_has_face_embedding(staff: Staff) -> bool:
+    emb = staff.face_embedding
+    return isinstance(emb, list) and len(emb) > 0
+
+
 def staff_needs_face_enrollment(staff: Staff) -> bool:
-    """True when staff has a photo but no up-to-date active embedding."""
+    """True when staff has a photo but no up-to-date embedding on the staff row."""
     image_key = staff_profile_image_key(staff)
     if not image_key:
         return False
-    latest = (
-        StaffFaceEmbedding.objects.filter(staff=staff, is_active=True, is_primary=True)
-        .order_by("-updated_at")
-        .first()
-    )
-    if latest is None:
+    if not staff_has_face_embedding(staff):
         return True
-    return (latest.source_profile_image or "") != image_key
+    return (staff.face_embedding_profile_key or "") != image_key
 
 
 def collect_db_face_embeddings() -> list[dict[str, Any]]:
-    return [
-        {"identity": row.identity_label, "embedding": row.embedding}
-        for row in StaffFaceEmbedding.objects.filter(is_active=True).only(
-            "identity_label", "embedding"
-        )
-    ]
+    rows: list[dict[str, Any]] = []
+    for staff in Staff.objects.exclude(face_embedding__isnull=True).iterator():
+        emb = staff.face_embedding
+        if not isinstance(emb, list) or not emb:
+            continue
+        identity = (staff.face_identity_label or staff_identity_label(staff)).strip()
+        if not identity:
+            continue
+        rows.append({"identity": identity, "embedding": emb})
+    return rows
 
 
 def push_face_embeddings_to_ml() -> dict[str, Any] | None:
@@ -66,26 +68,23 @@ def push_face_embeddings_to_ml() -> dict[str, Any] | None:
     return ml_reload_faces(embeddings=collect_db_face_embeddings())
 
 
-def refresh_staff_identity_labels(staff: Staff) -> int:
+def refresh_staff_identity_label(staff: Staff) -> bool:
     identity = staff_identity_label(staff)
-    if not identity:
-        return 0
-    return StaffFaceEmbedding.objects.filter(staff=staff, is_active=True).update(
-        identity_label=identity
-    )
+    if not identity or not staff_has_face_embedding(staff):
+        return False
+    if (staff.face_identity_label or "").strip() == identity:
+        return False
+    Staff.objects.filter(pk=staff.pk).update(face_identity_label=identity)
+    return True
 
 
-def enroll_staff_face(staff: Staff, *, push_ml: bool = True, force: bool = False) -> StaffFaceEmbedding | None:
-    """Extract SFace embedding from staff.profile_image and store in StaffFaceEmbedding."""
+def enroll_staff_face(staff: Staff, *, push_ml: bool = True, force: bool = False) -> Staff | None:
+    """Extract SFace embedding from staff.profile_image and store on the Staff row."""
     image_key = staff_profile_image_key(staff)
     if not image_key:
         return None
     if not force and not staff_needs_face_enrollment(staff):
-        return (
-            StaffFaceEmbedding.objects.filter(staff=staff, is_active=True, is_primary=True)
-            .order_by("-updated_at")
-            .first()
-        )
+        return staff
     if not ml_service_enabled():
         logger.warning("ML_SERVICE_URL not set — cannot enroll face for staff %s", staff.pk)
         return None
@@ -115,27 +114,13 @@ def enroll_staff_face(staff: Staff, *, push_ml: bool = True, force: bool = False
         return None
 
     identity = staff_identity_label(staff)
-    StaffFaceEmbedding.objects.filter(staff=staff, is_primary=True).update(
-        is_primary=False,
-        is_active=False,
+    Staff.objects.filter(pk=staff.pk).update(
+        face_embedding=embedding,
+        face_embedding_dim=len(embedding),
+        face_embedding_model=result.get("model") or Staff.FACE_EMBEDDING_MODEL_SFACE,
+        face_identity_label=identity,
+        face_embedding_profile_key=image_key,
     )
-
-    ext = Path(filename).suffix or ".jpg"
-    safe_identity = "".join(c if c.isalnum() or c in "._-" else "_" for c in identity)
-    face_filename = f"staff_{staff.id}_{safe_identity}{ext}"
-
-    emb = StaffFaceEmbedding(
-        staff=staff,
-        embedding=embedding,
-        embedding_dim=len(embedding),
-        embedding_model=result.get("model") or StaffFaceEmbedding.EMBEDDING_MODEL_SFACE,
-        identity_label=identity,
-        is_primary=True,
-        is_active=True,
-        source_profile_image=image_key,
-    )
-    emb.image.save(face_filename, ContentFile(image_bytes), save=False)
-    emb.save()
 
     logger.info(
         "Enrolled face for staff %s (%s) as %r dim=%s",
@@ -151,7 +136,7 @@ def enroll_staff_face(staff: Staff, *, push_ml: bool = True, force: bool = False
         except MLServiceError as exc:
             logger.warning("Could not push face embeddings to ML: %s", exc)
 
-    return emb
+    return Staff.objects.filter(pk=staff.pk).first()
 
 
 def enroll_missing_staff_faces(*, push_ml: bool = True) -> tuple[int, int]:
@@ -201,7 +186,7 @@ def enroll_all_staff_faces(*, push_ml: bool = True, force: bool = False) -> tupl
     return enrolled, skipped
 
 
-def sync_staff_face_after_save(staff: Staff, *, image_changed: bool) -> StaffFaceEmbedding | None:
+def sync_staff_face_after_save(staff: Staff, *, image_changed: bool) -> Staff | None:
     """Called after staff create/update when profile_image may have changed."""
     if not staff_profile_image_key(staff):
         return None
@@ -214,8 +199,13 @@ def sync_staff_identity_after_user_link(staff: Staff) -> None:
     """Refresh identity labels and reload ML after linking/creating a user."""
     if staff_profile_image_key(staff):
         enroll_staff_face(staff, push_ml=False, force=staff_needs_face_enrollment(staff))
-    elif StaffFaceEmbedding.objects.filter(staff=staff, is_active=True).exists():
-        refresh_staff_identity_labels(staff)
+    elif staff_has_face_embedding(staff):
+        if refresh_staff_identity_label(staff):
+            try:
+                push_face_embeddings_to_ml()
+            except MLServiceError as exc:
+                logger.warning("Could not push face embeddings to ML: %s", exc)
+            return
     try:
         push_face_embeddings_to_ml()
     except MLServiceError as exc:
