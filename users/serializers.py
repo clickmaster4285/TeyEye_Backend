@@ -214,7 +214,22 @@ _STAFF_FACE_PRIVATE_FIELDS = (
     "face_embedding_model",
     "face_identity_label",
     "face_embedding_profile_key",
+    "face_embeddings",
 )
+
+
+def staff_photo_urls_for(staff, request) -> list[str]:
+    from django.conf import settings
+
+    from .staff_photos import staff_photo_paths
+
+    urls: list[str] = []
+    for path in staff_photo_paths(staff):
+        if request is not None:
+            urls.append(request.build_absolute_uri(settings.MEDIA_URL + path))
+        else:
+            urls.append(settings.MEDIA_URL + path)
+    return urls
 
 
 # -----------------------------
@@ -223,11 +238,16 @@ _STAFF_FACE_PRIVATE_FIELDS = (
 class StaffSerializer(serializers.ModelSerializer):
     user_details = serializers.SerializerMethodField(read_only=True)
     national_id = serializers.SerializerMethodField(read_only=True)
+    staff_photo_urls = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Staff
         fields = "__all__"
-        read_only_fields = ["created_at", *_STAFF_FACE_PRIVATE_FIELDS]
+        read_only_fields = ["created_at", "staff_photos", *_STAFF_FACE_PRIVATE_FIELDS]
+
+    def get_staff_photo_urls(self, obj):
+        request = self.context.get("request")
+        return staff_photo_urls_for(obj, request)
 
     def get_national_id(self, obj):
         return getattr(obj, "national_id", None) or obj.cnic
@@ -246,6 +266,7 @@ class StaffSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        data["staff_photo_urls"] = staff_photo_urls_for(instance, self.context.get("request"))
         for key in _STAFF_FACE_PRIVATE_FIELDS:
             data.pop(key, None)
         return data
@@ -310,7 +331,10 @@ class StaffCreateSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["national_id"] = getattr(instance, "national_id", None) or instance.cnic
+        data["staff_photo_urls"] = staff_photo_urls_for(instance, self.context.get("request"))
         for key in ("first_name", "last_name", "street_address", "emergency_contact_phone", "emergency_contact_name", "date_of_joining"):
+            data.pop(key, None)
+        for key in _STAFF_FACE_PRIVATE_FIELDS:
             data.pop(key, None)
         return data
 
@@ -396,10 +420,11 @@ class StaffUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Staff
         fields = "__all__"
-        read_only_fields = ["created_at", "cnic", *_STAFF_FACE_PRIVATE_FIELDS]
+        read_only_fields = ["created_at", "cnic", "staff_photos", *_STAFF_FACE_PRIVATE_FIELDS]
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
+        data["staff_photo_urls"] = staff_photo_urls_for(instance, self.context.get("request"))
         for key in _STAFF_FACE_PRIVATE_FIELDS:
             data.pop(key, None)
         return data
@@ -411,6 +436,7 @@ class StaffUpdateSerializer(serializers.ModelSerializer):
 class StaffListSerializer(serializers.ModelSerializer):
     national_id = serializers.SerializerMethodField(read_only=True)
     face_enrolled = serializers.SerializerMethodField(read_only=True)
+    staff_photo_urls = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Staff
@@ -424,6 +450,8 @@ class StaffListSerializer(serializers.ModelSerializer):
             "department",
             "emergency_contact",
             "profile_image",
+            "staff_photos",
+            "staff_photo_urls",
             "face_enrolled",
             "user",
             "employee_id",
@@ -449,7 +477,13 @@ class StaffListSerializer(serializers.ModelSerializer):
         except Exception:
             return obj.cnic
 
+    def get_staff_photo_urls(self, obj):
+        return staff_photo_urls_for(obj, self.context.get("request"))
+
     def get_face_enrolled(self, obj):
+        embeddings = getattr(obj, "face_embeddings", None)
+        if isinstance(embeddings, list) and embeddings:
+            return True
         if not obj.profile_image:
             return False
         emb = obj.face_embedding

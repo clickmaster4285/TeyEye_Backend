@@ -159,21 +159,68 @@ class StaffViewSet(viewsets.ModelViewSet):
             return StaffListSerializer
         return StaffSerializer
 
+    @staticmethod
+    def _strip_multipart_photo_fields(request):
+        """Uploaded files must not bind to the staff_photos JSON column."""
+        data = request.data
+        if not hasattr(data, "pop"):
+            return
+        if hasattr(data, "_mutable"):
+            data._mutable = True
+        try:
+            data.pop("staff_photos", None)
+        except TypeError:
+            pass
+
+    def create(self, request, *args, **kwargs):
+        self._strip_multipart_photo_fields(request)
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        self._strip_multipart_photo_fields(request)
+        return super().update(request, *args, **kwargs)
+
+    def partial_update(self, request, *args, **kwargs):
+        self._strip_multipart_photo_fields(request)
+        return super().partial_update(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         """Create staff member without user account"""
         staff = serializer.save()
+        from .staff_photos import apply_staff_photo_uploads
+
+        photos_changed = apply_staff_photo_uploads(staff, self.request)
+        if photos_changed:
+            staff.refresh_from_db()
+            try:
+                from ml.face_sync import sync_staff_faces_after_save
+
+                sync_staff_faces_after_save(staff, force=True)
+            except Exception:
+                pass
         create_activity_log(
-            self.request.user, 
-            self.request, 
+            self.request.user,
+            self.request,
             f"Created staff: {staff.full_name} (ID: {staff.id})"
         )
 
     def perform_update(self, serializer):
         """Update staff member"""
         staff = serializer.save()
+        from .staff_photos import apply_staff_photo_uploads
+
+        photos_changed = apply_staff_photo_uploads(staff, self.request)
+        if photos_changed:
+            staff.refresh_from_db()
+            try:
+                from ml.face_sync import sync_staff_faces_after_save
+
+                sync_staff_faces_after_save(staff, force=True)
+            except Exception:
+                pass
         create_activity_log(
-            self.request.user, 
-            self.request, 
+            self.request.user,
+            self.request,
             f"Updated staff: {staff.full_name}"
         )
 
