@@ -182,6 +182,17 @@ class Staff(models.Model):
         default="",
         help_text="profile_image path when face_embedding was generated.",
     )
+    # Additional recognition photos (paths under MEDIA_ROOT) — same Staff row, no extra table.
+    staff_photos = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Ordered staff photo paths (max 5). First entry mirrors profile_image.",
+    )
+    face_embeddings = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="SFace vectors per staff photo: [{image_key, embedding, dim, model}, ...].",
+    )
 
     def __str__(self):
         return f"{self.full_name} ({self.designation})"
