@@ -160,51 +160,31 @@ class Staff(models.Model):
         choices=RECORD_SOURCE_CHOICES,
         default=RECORD_SOURCE_DATABASE,
     )
-
-    def __str__(self):
-        return f"{self.full_name} ({self.designation})"
-
-
-class StaffFaceEmbedding(models.Model):
-    """Face enrollment photo + deep-learning embedding vector for staff recognition."""
-
-    EMBEDDING_MODEL_SFACE = "sface"
-
-    staff = models.ForeignKey(
-        Staff,
-        on_delete=models.CASCADE,
-        related_name="face_embeddings",
+    # Face recognition (SFace vector from profile_image — stored on staff row, not a separate table)
+    FACE_EMBEDDING_MODEL_SFACE = "sface"
+    face_embedding = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Face feature vector for ML matching.",
     )
-    image = models.ImageField(upload_to="staff_faces/")
-    embedding = models.JSONField(
-        help_text="Face feature vector (cosine similarity matching, SFace/ArcFace-style).",
-    )
-    embedding_dim = models.PositiveSmallIntegerField(default=0)
-    embedding_model = models.CharField(max_length=32, default=EMBEDDING_MODEL_SFACE)
-    identity_label = models.CharField(
+    face_embedding_dim = models.PositiveSmallIntegerField(default=0)
+    face_embedding_model = models.CharField(max_length=32, blank=True, default="")
+    face_identity_label = models.CharField(
         max_length=150,
+        blank=True,
+        default="",
         db_index=True,
-        help_text="Username or full name used when matching detections.",
+        help_text="Name/username label pushed to ML for recognition.",
     )
-    is_primary = models.BooleanField(default=True)
-    is_active = models.BooleanField(default=True)
-    source_profile_image = models.CharField(
+    face_embedding_profile_key = models.CharField(
         max_length=500,
         blank=True,
         default="",
-        help_text="Staff.profile_image path when this embedding was generated.",
+        help_text="profile_image path when face_embedding was generated.",
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-is_primary", "-updated_at"]
-        indexes = [
-            models.Index(fields=["staff", "is_active"]),
-        ]
 
     def __str__(self):
-        return f"{self.identity_label} ({self.embedding_model}, dim={self.embedding_dim})"
+        return f"{self.full_name} ({self.designation})"
 
 
 class Attendance(models.Model):

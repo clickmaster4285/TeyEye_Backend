@@ -95,23 +95,17 @@ def resolve_staff_identity(label: str, class_name: str) -> tuple[str, str]:
     if cls not in ("person", "face") or lbl.lower() in _GENERIC_EMPLOYEE_LABELS:
         return "", ""
 
-    from users.models import Staff, StaffFaceEmbedding
+    from users.models import Staff
 
-    staff = None
-    embedding = (
-        StaffFaceEmbedding.objects.filter(identity_label__iexact=lbl, is_active=True)
-        .select_related("staff")
+    staff = (
+        Staff.objects.filter(
+            Q(face_identity_label__iexact=lbl)
+            | Q(user__username__iexact=lbl)
+            | Q(full_name__iexact=lbl)
+        )
+        .select_related("user")
         .first()
     )
-    if embedding is not None:
-        staff = embedding.staff
-
-    if staff is None:
-        staff = (
-            Staff.objects.filter(Q(user__username__iexact=lbl) | Q(full_name__iexact=lbl))
-            .select_related("user")
-            .first()
-        )
 
     if staff is None:
         return lbl[:150], ""
