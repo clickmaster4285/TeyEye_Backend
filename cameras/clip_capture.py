@@ -85,15 +85,6 @@ def _rtsp_input_extra() -> list[str]:
     ]
 
 
-def _rtsp_decode_max_width() -> int:
-    return max(640, int(getattr(settings, "CAMERA_RTSP_DECODE_MAX_WIDTH", 1920) or 1920))
-
-
-def _rtsp_video_filter() -> str:
-    """Scale main-stream 4K/H.265 decode to a YOLO-friendly width (still Channels/101)."""
-    return f"scale={_rtsp_decode_max_width()}:-2:flags=lanczos"
-
-
 def _display_class(event: DetectionEvent) -> str:
     return (event.class_name or event.label or "object").strip()
 
@@ -383,8 +374,6 @@ def _read_rtsp_snapshot(stream_url: str) -> object | None:
         *_rtsp_input_extra(),
         "-i",
         stream_url,
-        "-vf",
-        _rtsp_video_filter(),
         "-frames:v",
         "1",
         "-q:v",
