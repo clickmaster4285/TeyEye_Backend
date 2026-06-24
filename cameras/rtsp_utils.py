@@ -24,6 +24,7 @@ def nvr_stream_path(nvr: Nvr, channel: int) -> str:
     brand = nvr.brand
 
     if brand == NvrBrand.HIKVISION:
+        # Main stream only (e.g. 101, 201). Configure NVR encoder: H.264 @ 1920x1080 — not H.265 4K.
         stream_id = ch if ch >= 100 else ch * 100 + 1
         return f"/Streaming/Channels/{stream_id}"
 

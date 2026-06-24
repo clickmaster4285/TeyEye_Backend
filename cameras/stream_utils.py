@@ -66,6 +66,8 @@ def capture_jpeg_frame(stream_url: str, timeout: float = 12.0) -> bytes | None:
         "ignore_err",
         "-i",
         url,
+        "-vf",
+        "scale=1920:-2:flags=lanczos",
         "-frames:v",
         "1",
         "-f",
