@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import timedelta
 from typing import Any
@@ -10,8 +11,10 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-from .clip_capture import schedule_detection_clip
+from .clip_capture import schedule_attendance_snapshot, schedule_detection_clip
 from .models import Camera, CameraPurpose, ClipStatus, DetectionEvent
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MIN_CONFIDENCE = 0.25
 _GENERIC_EMPLOYEE_LABELS = frozenset({"unknown", "person", "face", ""})
@@ -151,6 +154,37 @@ def save_detection_batch(
         if confidence < min_confidence:
             continue
 
+        clip_enabled = bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
+        employee_name, personal_number = resolve_staff_identity(label, class_name)
+
+        from users.attendance_service import try_mark_attendance_from_detection
+
+        try:
+            action, attendance_record = try_mark_attendance_from_detection(
+                camera, label, class_name, confidence
+            )
+            if action in ("check_in", "check_out") and attendance_record is not None:
+                logger.info(
+                    "Attendance %s via camera %s for %s",
+                    action,
+                    camera.code,
+                    employee_name or label,
+                )
+                schedule_attendance_snapshot(
+                    camera.pk,
+                    attendance_record.pk,
+                    label=label,
+                    employee_name=employee_name,
+                    class_name=class_name,
+                    bbox=det.get("bbox") or [],
+                    confidence=confidence,
+                    action=action,
+                    infer_frame_w=int(det.get("frame_width") or 0),
+                    infer_frame_h=int(det.get("frame_height") or 0),
+                )
+        except Exception:
+            logger.exception("Attendance mark failed for camera %s", camera.pk)
+
         if since is not None and DetectionEvent.objects.filter(
             camera=camera,
             label=label,
@@ -159,8 +193,6 @@ def save_detection_batch(
         ).exists():
             continue
 
-        clip_enabled = bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
-        employee_name, personal_number = resolve_staff_identity(label, class_name)
         event = DetectionEvent.objects.create(
             camera=camera,
             class_name=class_name[:80],

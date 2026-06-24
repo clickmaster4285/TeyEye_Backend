@@ -402,8 +402,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrHR]
     serializer_class = AttendanceSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["user", "date", "user__role"]
-    search_fields = ["user__username", "user__staff_profile__full_name"]
+    filterset_fields = ["user", "staff", "date", "user__role"]
+    search_fields = ["user__username", "user__staff_profile__full_name", "staff__full_name"]
     ordering_fields = ["date", "check_in", "check_out"]
 
     def perform_create(self, serializer):
@@ -416,7 +416,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         create_activity_log(
             self.request.user,
             self.request,
-            f"Marked attendance for {attendance.user.username}"
+            f"Marked attendance for {attendance.staff.full_name if attendance.staff_id else attendance.user.username}"
         )
 
     @action(
@@ -470,70 +470,67 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 }
             )
 
-        user = User.objects.filter(username__iexact=identity, is_deleted=False).first()
-        if not user:
-            user = (
-                User.objects.filter(
-                    is_deleted=False,
-                    staff_profile__full_name__iexact=identity.strip(),
-                )
-                .select_related("staff_profile")
-                .first()
-            )
-        if not user:
+        from users.attendance_service import (
+            mark_attendance_for_staff,
+            resolve_staff_for_face_identity,
+            staff_is_enrolled_for_attendance,
+        )
+
+        staff_profile = resolve_staff_for_face_identity(identity)
+        if not staff_profile:
             return Response(
                 {
                     "recognized": False,
-                    "message": (
-                        f"Face matched '{identity}' but no active user matches that username "
-                        "or staff full name. Add a staff profile photo or run: python manage.py sync_staff_faces"
-                    ),
+                    "message": "No matching staff face found in HR records.",
                     "identity": identity,
                     "similarity": similarity,
                 }
             )
 
+        if not staff_is_enrolled_for_attendance(staff_profile):
+            return Response(
+                {
+                    "recognized": False,
+                    "message": "Staff member has no enrolled face photos. Upload photos and sync embeddings.",
+                    "identity": identity,
+                    "similarity": similarity,
+                }
+            )
+
+        user = staff_profile.user if staff_profile.user_id and not staff_profile.user.is_deleted else None
         payload = {
             "recognized": True,
-            "user_id": user.id,
-            "username": user.username,
+            "user_id": user.id if user else None,
+            "staff_id": staff_profile.id,
+            "username": user.username if user else None,
+            "staff_name": staff_profile.full_name,
             "similarity": similarity,
         }
 
         if not auto_mark:
             return Response(payload)
 
-        today = timezone.localdate()
-        attendance, _created = Attendance.objects.get_or_create(user=user, date=today)
-        now = timezone.now()
-
-        if not attendance.check_in:
-            attendance.check_in = now
-            attendance.image.save(image.name or "face.jpg", ContentFile(image_bytes), save=False)
-            attendance.save()
-            payload["attendance"] = "check_in"
+        action, attendance = mark_attendance_for_staff(staff_profile, source="kiosk", allow_checkout=True)
+        payload["attendance"] = action
+        if attendance:
             payload["record_id"] = attendance.id
+
+        if action in ("check_in", "check_out") and attendance and image_bytes:
+            attendance.image.save(image.name or "face.jpg", ContentFile(image_bytes), save=True)
+
+        if action == "check_in":
             create_activity_log(
                 request.user,
                 request,
-                f"Face check-in: {user.username} (similarity {similarity:.2f})",
+                f"Face check-in: {staff_profile.full_name} (similarity {similarity:.2f})",
             )
-            return Response(payload)
-
-        if not attendance.check_out:
-            attendance.check_out = now
-            attendance.save(update_fields=["check_out"])
-            payload["attendance"] = "check_out"
-            payload["record_id"] = attendance.id
+        elif action == "check_out":
             create_activity_log(
                 request.user,
                 request,
-                f"Face check-out: {user.username} (similarity {similarity:.2f})",
+                f"Face check-out: {staff_profile.full_name} (similarity {similarity:.2f})",
             )
-            return Response(payload)
 
-        payload["attendance"] = "already_complete"
-        payload["record_id"] = attendance.id
         return Response(payload)
 
 

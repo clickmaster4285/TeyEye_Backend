@@ -178,6 +178,20 @@ def ml_live_mjpeg_raw_url(stream_key: str, rtsp_url: str | None = None) -> str:
     return f"{base}?{urlencode(params)}"
 
 
+def ml_live_mjpeg_attendance_url(
+    stream_key: str,
+    rtsp_url: str | None = None,
+    *,
+    width: int = 1280,
+) -> str:
+    """HD main-stream MJPEG for attendance clips (same RTSP session as live AI)."""
+    key = (stream_key or "").strip()
+    base = f"{_base_url()}/live/cam/{key}/mjpeg/attendance"
+    params = dict(_live_rtsp_params(rtsp_url))
+    params["width"] = str(max(640, min(3840, int(width or 1280))))
+    return f"{base}?{urlencode(params)}"
+
+
 def ml_register_cameras_bulk(entries: list[dict[str, str]]) -> dict[str, Any]:
     payload = [
         {

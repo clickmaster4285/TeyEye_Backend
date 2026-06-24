@@ -199,14 +199,51 @@ class Staff(models.Model):
 
 
 class Attendance(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="attendance_records")
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="attendance_records",
+        null=True,
+        blank=True,
+    )
+    staff = models.ForeignKey(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name="staff_attendance_records",
+        null=True,
+        blank=True,
+    )
     date = models.DateField(auto_now_add=True)
     check_in = models.DateTimeField(null=True, blank=True)
     check_out = models.DateTimeField(null=True, blank=True)
     image = models.ImageField(upload_to="attendance/", null=True, blank=True)
+    video = models.FileField(
+        upload_to="attendance/videos/",
+        null=True,
+        blank=True,
+        help_text="Short camera clip captured when attendance was marked.",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "date"],
+                condition=models.Q(user__isnull=False),
+                name="users_attendance_unique_user_date",
+            ),
+            models.UniqueConstraint(
+                fields=["staff", "date"],
+                condition=models.Q(staff__isnull=False),
+                name="users_attendance_unique_staff_date",
+            ),
+        ]
 
     def __str__(self):
-        return f"{self.user.username} - {self.date}"
+        if self.user_id:
+            return f"{self.user.username} - {self.date}"
+        if self.staff_id:
+            return f"{self.staff.full_name} - {self.date}"
+        return f"Attendance {self.pk} - {self.date}"
 
 
 # -----------------------------

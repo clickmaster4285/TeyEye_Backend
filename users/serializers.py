@@ -510,15 +510,24 @@ class LinkUserToStaffSerializer(serializers.Serializer):
 # Attendance Serializers
 # -----------------------------
 class AttendanceSerializer(serializers.ModelSerializer):
-    username = serializers.CharField(source="user.username", read_only=True)
+    username = serializers.SerializerMethodField(read_only=True)
     staff_name = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Attendance
-        fields = ["id", "user", "username", "staff_name", "date", "check_in", "check_out", "image"]
-    
+        fields = ["id", "user", "staff", "username", "staff_name", "date", "check_in", "check_out", "image", "video"]
+
+    def get_username(self, obj):
+        if obj.user_id:
+            return obj.user.username
+        if obj.staff_id and obj.staff.user_id:
+            return obj.staff.user.username
+        return None
+
     def get_staff_name(self, obj):
-        if hasattr(obj.user, "staff_profile"):
+        if obj.staff_id:
+            return obj.staff.full_name
+        if obj.user_id and hasattr(obj.user, "staff_profile"):
             return obj.user.staff_profile.full_name
         return None
 

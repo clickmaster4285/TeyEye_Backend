@@ -121,6 +121,7 @@ class Camera(models.Model):
         return f"cam-{self.pk}"
 
     def effective_stream_url(self) -> str:
+        """Main-stream RTSP URL (not substream). Used for ML registration."""
         from .rtsp_utils import build_rtsp_url_from_nvr
 
         return build_rtsp_url_from_nvr(self.nvr, self.channel)
