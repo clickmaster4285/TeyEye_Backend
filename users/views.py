@@ -419,6 +419,33 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             f"Marked attendance for {attendance.staff.full_name if attendance.staff_id else attendance.user.username}"
         )
 
+    def perform_update(self, serializer):
+        attendance = serializer.save()
+        label = (
+            attendance.staff.full_name
+            if attendance.staff_id
+            else (attendance.user.username if attendance.user_id else f"record {attendance.pk}")
+        )
+        create_activity_log(
+            self.request.user,
+            self.request,
+            f"Updated attendance for {label} (ID: {attendance.id})",
+        )
+
+    def perform_destroy(self, instance):
+        label = (
+            instance.staff.full_name
+            if instance.staff_id
+            else (instance.user.username if instance.user_id else f"record {instance.pk}")
+        )
+        record_id = instance.id
+        instance.delete()
+        create_activity_log(
+            self.request.user,
+            self.request,
+            f"Deleted attendance for {label} (ID: {record_id})",
+        )
+
     @action(
         detail=False,
         methods=["post"],
