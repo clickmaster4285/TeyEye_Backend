@@ -123,6 +123,12 @@ class UserViewSet(viewsets.ModelViewSet):
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+    @action(detail=False, methods=["get"], permission_classes=[IsAuthenticated])
+    def me(self, request):
+        """Current logged-in user profile (any authenticated role)."""
+        serializer = self.get_serializer(request.user)
+        return Response(serializer.data)
+
     @action(detail=False, methods=["get"])
     def unlinked(self, request):
         """Get users that are not linked to any staff"""
