@@ -28,7 +28,7 @@ staticfiles/
 local_settings.py
 .detection_worker.lock
 
-# Environment (never commit secrets)
+# Environment (never commit secrets; keep .env.example)
 .env
 .env.*
 !.env.example
