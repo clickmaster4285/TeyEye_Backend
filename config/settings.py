@@ -73,10 +73,12 @@ INSTALLED_APPS = [
     "users",
     "visitors",
     'logs',
+      "seizure_management",
     "detentions",
     "cameras",
     "warehouse",
     "ml.apps.MlConfig",
+    "person_journey.apps.PersonJourneyConfig",
 ]
 
 # -----------------------------
@@ -263,6 +265,45 @@ ATTENDANCE_VIDEO_FPS = int(os.getenv("ATTENDANCE_VIDEO_FPS", "10"))
 ATTENDANCE_VIDEO_WIDTH = int(os.getenv("ATTENDANCE_VIDEO_WIDTH", "1280"))
 ATTENDANCE_VIDEO_JPEG_QUALITY = int(os.getenv("ATTENDANCE_VIDEO_JPEG_QUALITY", "95"))
 ATTENDANCE_VIDEO_CRF = int(os.getenv("ATTENDANCE_VIDEO_CRF", "18"))
+
+# Person Journey — cross-camera tracking (parallel to detection worker; does not replace it)
+PERSON_JOURNEY_WORKER_ENABLED = os.getenv("PERSON_JOURNEY_WORKER_ENABLED", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+PERSON_JOURNEY_SYNC_INTERVAL_SEC = int(os.getenv("PERSON_JOURNEY_SYNC_INTERVAL_SEC", "60"))
+PERSON_JOURNEY_BACKEND_URL = os.getenv("PERSON_JOURNEY_BACKEND_URL", "http://127.0.0.1:8000").strip()
+PERSON_JOURNEY_INGEST_TOKEN = os.getenv("PERSON_JOURNEY_INGEST_TOKEN", "").strip()
+PERSON_JOURNEY_LIVE_INGEST_ENABLED = os.getenv("PERSON_JOURNEY_LIVE_INGEST_ENABLED", "True").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+PERSON_JOURNEY_LIVE_INGEST_INTERVAL_SEC = float(os.getenv("PERSON_JOURNEY_LIVE_INGEST_INTERVAL_SEC", "2"))
+PERSON_JOURNEY_LIVE_CAMERA_REFRESH_SEC = int(os.getenv("PERSON_JOURNEY_LIVE_CAMERA_REFRESH_SEC", "60"))
+# When journey ML pipeline is on, live ingest skips unknowns by default (pipeline uses track+ReID).
+# Leave empty for auto-detect; set True/False to force.
+PERSON_JOURNEY_LIVE_INGEST_UNKNOWN_ENABLED = os.getenv("PERSON_JOURNEY_LIVE_INGEST_UNKNOWN_ENABLED", "")
+PERSON_JOURNEY_INGEST_DEDUP_SECONDS = float(os.getenv("PERSON_JOURNEY_INGEST_DEDUP_SECONDS", "3"))
+JOURNEY_FACE_MATCH_THRESHOLD = float(os.getenv("JOURNEY_FACE_MATCH_THRESHOLD", "0.72"))
+JOURNEY_REID_MATCH_THRESHOLD = float(os.getenv("JOURNEY_REID_MATCH_THRESHOLD", "0.68"))
+JOURNEY_COMBINED_MATCH_THRESHOLD = float(os.getenv("JOURNEY_COMBINED_MATCH_THRESHOLD", "0.75"))
+JOURNEY_MAX_TRAVEL_SECONDS = int(os.getenv("JOURNEY_MAX_TRAVEL_SECONDS", "120"))
+JOURNEY_RECENT_WINDOW_SECONDS = int(os.getenv("JOURNEY_RECENT_WINDOW_SECONDS", "600"))
+# 3840 = 4K width cap; 0 = native camera resolution (no ffmpeg scale). Prefer native RTSP main stream.
+JOURNEY_SNAPSHOT_WIDTH = int(os.getenv("JOURNEY_SNAPSHOT_WIDTH", "3840"))
+JOURNEY_SNAPSHOT_JPEG_QUALITY = int(os.getenv("JOURNEY_SNAPSHOT_JPEG_QUALITY", "98"))
+JOURNEY_SNAPSHOT_FULL_FRAME = os.getenv("JOURNEY_SNAPSHOT_FULL_FRAME", "True").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+JOURNEY_SNAPSHOT_NATIVE = os.getenv("JOURNEY_SNAPSHOT_NATIVE", "True").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 # CCTV stream FPS for ffmpeg proxy (RTSP URLs are built dynamically from NVR DB records)
 CAMERA_STREAM_FPS = int(os.getenv("ML_LIVE_STREAM_FPS", "25"))

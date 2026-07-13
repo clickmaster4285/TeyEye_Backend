@@ -33,6 +33,21 @@ def _clip_enabled() -> bool:
     return bool(getattr(settings, "DETECTION_CLIP_ENABLED", True))
 
 
+def _link_journey_snapshot(detection_event_id: int) -> None:
+    """Queue person-crop snapshots for linked journey events (additive hook)."""
+    try:
+        from person_journey.models import JourneyEvent
+        from person_journey.snapshot_capture import _enqueue_journey_crop
+
+        for journey_event_id in JourneyEvent.objects.filter(
+            detection_event_id=detection_event_id,
+            snapshot_path="",
+        ).values_list("pk", flat=True):
+            _enqueue_journey_crop(journey_event_id)
+    except Exception:
+        logger.debug("Journey snapshot link skipped for detection %s", detection_event_id)
+
+
 def _update_clip_status(event_id: int, status: str) -> None:
     close_old_connections()
     from .models import DetectionEvent
@@ -439,6 +454,7 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
 
     if event.clip:
         _update_clip_status(event_id, ClipStatus.READY)
+        _link_journey_snapshot(event_id)
         return
 
     _update_clip_status(event_id, ClipStatus.RECORDING)
@@ -478,11 +494,13 @@ def capture_detection_clip_sync(camera_id: int, event_id: int) -> None:
         event.refresh_from_db(fields=["clip", "clip_status"])
         if event.clip:
             _update_clip_status(event_id, ClipStatus.READY)
+            _link_journey_snapshot(event_id)
             return
 
         filename = f"event_{event_id}.jpg"
         event.clip.save(filename, ContentFile(encoded.tobytes()), save=True)
         _update_clip_status(event_id, ClipStatus.READY)
+        _link_journey_snapshot(event_id)
         logger.info(
             "Saved detection snapshot for event %s (%s) class=%s",
             event_id,
@@ -585,6 +603,258 @@ def _attendance_jpeg_quality() -> int:
 
 def _attendance_video_crf() -> int:
     return max(15, min(28, int(getattr(settings, "ATTENDANCE_VIDEO_CRF", 18))))
+
+
+def _journey_snapshot_width() -> int:
+    """Target width in pixels; 0 = keep native camera resolution."""
+    try:
+        value = int(getattr(settings, "JOURNEY_SNAPSHOT_WIDTH", 3840))
+    except (TypeError, ValueError):
+        value = 3840
+    if value <= 0:
+        return 0
+    return max(640, min(4096, value))
+
+
+def _journey_snapshot_native() -> bool:
+    return bool(getattr(settings, "JOURNEY_SNAPSHOT_NATIVE", True))
+
+
+def _journey_jpeg_quality() -> int:
+    return max(90, min(100, int(getattr(settings, "JOURNEY_SNAPSHOT_JPEG_QUALITY", 98))))
+
+
+def _journey_snapshot_full_frame() -> bool:
+    return bool(getattr(settings, "JOURNEY_SNAPSHOT_FULL_FRAME", True))
+
+
+def _upscale_frame_to_hd(frame, target_width: int):
+    upscaled = _upscale_frames_to_hd([frame], target_width)
+    return upscaled[0] if upscaled else frame
+
+
+def _read_rtsp_native_snapshot(stream_url: str) -> object | None:
+    """Grab one frame at the camera's native main-stream resolution (no scaling)."""
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"journey_native_{int(time.time() * 1000)}.jpg")
+    cmd = [
+        ffmpeg_path(),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *_rtsp_input_extra(),
+        "-i",
+        stream_url,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "1",
+        "-y",
+        temp_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=45)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Journey native RTSP snapshot failed: %s", exc)
+        return None
+
+    frame = None
+    try:
+        if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+            frame = cv2.imread(temp_path)
+    finally:
+        try:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+    if proc.returncode != 0 or frame is None:
+        return None
+    return frame
+
+
+def _read_rtsp_hd_snapshot(stream_url: str, *, target_width: int) -> object | None:
+    """Grab one frame from RTSP, scaling to target_width when the stream is smaller."""
+    if target_width <= 0:
+        return _read_rtsp_native_snapshot(stream_url)
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    temp_dir = os.path.join(settings.MEDIA_ROOT, "detection_clips", "_tmp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"journey_hd_{int(time.time() * 1000)}.jpg")
+    cmd = [
+        ffmpeg_path(),
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *_rtsp_input_extra(),
+        "-i",
+        stream_url,
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale='min(iw,{target_width})':-2:flags=lanczos",
+        "-q:v",
+        "1",
+        "-y",
+        temp_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=30)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Journey HD RTSP snapshot failed: %s", exc)
+        return None
+
+    frame = None
+    try:
+        if os.path.isfile(temp_path) and os.path.getsize(temp_path) > 0:
+            frame = cv2.imread(temp_path)
+    finally:
+        try:
+            if os.path.isfile(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+    if proc.returncode != 0 or frame is None:
+        return None
+    return frame
+
+
+def read_journey_hd_frame(camera: Camera) -> object | None:
+    """Full-resolution frame for journey snapshots (native RTSP main stream preferred)."""
+    target_width = _journey_snapshot_width()
+    prefer_native = _journey_snapshot_native() or target_width <= 0
+    stream_url = camera.effective_stream_url() if camera else ""
+
+    if stream_url and prefer_native:
+        frame = _read_rtsp_native_snapshot(stream_url)
+        if frame is not None:
+            h, w = frame.shape[:2]
+            logger.debug("Journey snapshot native RTSP %sx%s from camera %s", w, h, camera.pk)
+            if target_width <= 0 or w >= target_width:
+                return frame
+            return _upscale_frame_to_hd(frame, target_width)
+
+    if stream_url and target_width > 0:
+        frame = _read_rtsp_hd_snapshot(stream_url, target_width=target_width)
+        if frame is not None:
+            return frame
+
+    _warm_ml_stream(camera)
+    ml_width = target_width if target_width > 0 else 3840
+    attendance_url = _ml_attendance_mjpeg_url(camera, target_width=ml_width)
+    if attendance_url:
+        frame = _read_mjpeg_snapshot(attendance_url, timeout_sec=25.0)
+        if frame is not None:
+            if target_width > 0:
+                return _upscale_frame_to_hd(frame, target_width)
+            return frame
+
+    if stream_url:
+        frame = _read_rtsp_snapshot(stream_url)
+        if frame is not None:
+            if target_width > 0:
+                return _upscale_frame_to_hd(frame, target_width)
+            return frame
+
+    raw_url = _ml_raw_mjpeg_url(camera)
+    if raw_url:
+        frame = _read_mjpeg_snapshot(raw_url, timeout_sec=20.0)
+        if frame is not None and target_width > 0:
+            return _upscale_frame_to_hd(frame, target_width)
+        return frame
+    return None
+
+
+def draw_journey_snapshot_on_frame(
+    frame,
+    *,
+    bbox: list[int] | None,
+    person_label: str,
+    camera_name: str = "",
+    confidence: float | None = None,
+):
+    """Annotate a full camera frame — box around the person + readable labels."""
+    import cv2
+
+    output = frame.copy()
+    h, w = output.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.55, h / 1080 * 0.55)
+    thickness = max(1, int(font_scale * 1.6))
+    box_thickness = max(2, int(font_scale * 1.4))
+
+    banner_lines = [line for line in [camera_name.strip(), person_label.strip()] if line]
+    if confidence is not None and confidence > 0:
+        pct = confidence * 100.0 if confidence <= 1.0 else confidence
+        banner_lines.append(f"{pct:.0f}%")
+
+    y_cursor = 10
+    for line in banner_lines:
+        (text_w, text_h), baseline = cv2.getTextSize(line, font, font_scale, thickness)
+        cv2.rectangle(
+            output,
+            (8, y_cursor),
+            (16 + text_w, y_cursor + text_h + baseline + 8),
+            (0, 0, 0),
+            -1,
+        )
+        cv2.putText(
+            output,
+            line,
+            (12, y_cursor + text_h + 4),
+            font,
+            font_scale,
+            (255, 255, 255),
+            thickness,
+            cv2.LINE_AA,
+        )
+        y_cursor += text_h + baseline + 12
+
+    if not bbox:
+        return output
+
+    x1, y1, x2, y2 = bbox
+    color = (0, 220, 0)
+    cv2.rectangle(output, (x1, y1), (x2, y2), color, box_thickness)
+
+    box_label = person_label.strip()
+    if confidence is not None and confidence > 0:
+        box_label = f"{box_label} {confidence:.2f}".strip()
+    (text_w, text_h), baseline = cv2.getTextSize(box_label, font, font_scale, thickness)
+    text_x = int(x1)
+    text_y = max(text_h + 6, int(y1) - 6)
+    cv2.rectangle(
+        output,
+        (text_x, text_y - text_h - 4),
+        (text_x + text_w + 6, text_y + baseline + 3),
+        (0, 0, 0),
+        -1,
+    )
+    cv2.putText(
+        output,
+        box_label,
+        (text_x + 3, text_y),
+        font,
+        font_scale,
+        color,
+        thickness,
+        cv2.LINE_AA,
+    )
+    return output
 
 
 def _upscale_frames_to_hd(frames: list, target_width: int) -> list:

@@ -177,6 +177,29 @@ class DetectionEvent(models.Model):
         choices=ClipStatus.choices,
         default=ClipStatus.PENDING,
     )
+    # Journey / tracking columns (required by DB schema for cross-camera person linking)
+    local_track_id = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="ByteTrack ID on this camera frame.",
+    )
+    person_qr = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Linked journey person code (P100, U300, V55) when identified.",
+    )
+    track_event = models.CharField(
+        max_length=16,
+        blank=True,
+        default="detection",
+        help_text="Track lifecycle: detection, enter, exit, etc.",
+    )
+    person_identity_id = models.BigIntegerField(
+        null=True,
+        blank=True,
+        help_text="Optional FK to person_journey.JourneyPerson pk when linked.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

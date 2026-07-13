@@ -188,7 +188,7 @@ def ml_live_mjpeg_attendance_url(
     key = (stream_key or "").strip()
     base = f"{_base_url()}/live/cam/{key}/mjpeg/attendance"
     params = dict(_live_rtsp_params(rtsp_url))
-    params["width"] = str(max(640, min(3840, int(width or 1280))))
+    params["width"] = str(max(640, min(4096, int(width or 3840))))
     return f"{base}?{urlencode(params)}"
 
 
