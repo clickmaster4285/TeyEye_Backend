@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone
 from rest_framework import serializers
 
-from detentions.models import DepositAccountEntry, DetentionMemo
+from detentions.models import DepositAccountEntry, DetentionMemo, DetentionMemoGoodsLine
 from detentions.serializers import create_deposit_account_entry
 
 from .models import (
@@ -433,6 +433,11 @@ class AssessmentWriteSerializer(serializers.Serializer):
     )
     createdBy = serializers.CharField(required=False, allow_blank=True)
     updatedBy = serializers.CharField(required=False, allow_blank=True)
+    goodsValuation = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        allow_empty=True,
+    )
 
 
 class AssessmentApprovalSerializer(serializers.Serializer):
@@ -709,6 +714,28 @@ def save_note_sheet_goods_images(request, obj: NoteSheet, items_payload: list | 
             remaining -= 1
 
 
+def apply_goods_valuation(memo: DetentionMemo, goods_valuation: list | None) -> None:
+    """Update PCT code and assessable value on detention memo goods (assessment stage)."""
+    if not goods_valuation:
+        return
+    for row in goods_valuation:
+        if not isinstance(row, dict):
+            continue
+        line_id = str(row.get("id") or "").strip()
+        if not line_id:
+            continue
+        line = None
+        if _is_uuid(line_id):
+            line = DetentionMemoGoodsLine.objects.filter(memo=memo, pk=line_id).first()
+        if line is None:
+            line = DetentionMemoGoodsLine.objects.filter(memo=memo, client_line_id=line_id).first()
+        if line is None:
+            continue
+        line.pct_code = (row.get("pctCode") or "").strip()
+        line.assessable_value_pkr = (row.get("assessableValuePkr") or "").strip()
+        line.save(update_fields=["pct_code", "assessable_value_pkr"])
+
+
 def apply_assessment(
     obj: DetentionAssessment,
     data: dict,
@@ -735,6 +762,8 @@ def apply_assessment(
             obj.created_by = (data.get("createdBy") or actor).strip()
         obj.updated_by = actor
     obj.save()
+    if "goodsValuation" in data and obj.detention_memo_id:
+        apply_goods_valuation(obj.detention_memo, data.get("goodsValuation"))
     return obj
 
 
