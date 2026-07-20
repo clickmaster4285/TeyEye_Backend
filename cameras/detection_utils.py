@@ -30,6 +30,31 @@ _ANPR_CLASS_NAMES = frozenset(
         "number plate",
     }
 )
+# Must match ml_services/inference_engine.py ALLOWED_COCO_CLASS_NAMES (yolo26l allowlist).
+# Extra COCO classes are dropped at ML inference; this is a safety net when saving events.
+_ALLOWED_COCO_CLASS_NAMES = frozenset(
+    {
+        # High priority
+        "person",
+        "car",
+        "truck",
+        "bus",
+        "motorcycle",
+        "backpack",
+        "handbag",
+        "suitcase",
+        "cell phone",
+        "laptop",
+        "knife",
+        # Medium priority
+        "bicycle",
+        "bench",
+        "chair",
+        "dining table",
+        "bottle",
+    }
+)
+_SPECIALIST_MODEL_TAGS = frozenset({"custom", "smoke", "weapon"})
 
 
 def _coco_max_class_id() -> int:
@@ -39,10 +64,14 @@ def _coco_max_class_id() -> int:
         return 79
 
 
+def _model_tag(det: dict[str, Any]) -> str:
+    return str(det.get("model_tag") or det.get("model") or "").strip().lower()
+
+
 def is_coco_detection(det: dict[str, Any]) -> bool:
-    """True for generic COCO model hits (e.g. chair, person) — not custom specialist classes."""
-    tag = str(det.get("model_tag") or "").strip().lower()
-    if tag in ("custom", "smoke"):
+    """True for generic COCO model hits — not custom / smoke / weapon specialists."""
+    tag = _model_tag(det)
+    if tag in _SPECIALIST_MODEL_TAGS:
         return False
     if tag == "coco":
         return True
@@ -51,6 +80,12 @@ def is_coco_detection(det: dict[str, Any]) -> bool:
     except (TypeError, ValueError):
         cls_id = -1
     return 0 <= cls_id <= _coco_max_class_id()
+
+
+def is_allowed_coco_class(det: dict[str, Any]) -> bool:
+    """True when a COCO detection is in the high/medium priority allowlist."""
+    cls = str(det.get("class_name") or det.get("label") or "").strip().lower()
+    return cls in _ALLOWED_COCO_CLASS_NAMES
 
 
 def filter_detections_for_camera(camera: Camera, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -66,7 +101,8 @@ def filter_detections_for_camera(camera: Camera, detections: list[dict[str, Any]
         cls = str(det.get("class_name") or det.get("label") or "").strip().lower()
 
         if purpose == CameraPurpose.OBJECT_DETECTION:
-            if not is_coco_detection(det):
+            # Keep allowlisted COCO classes + specialist (weapon / fire / smoke / custom).
+            if not is_coco_detection(det) or is_allowed_coco_class(det):
                 kept.append(det)
             continue
 
@@ -80,6 +116,9 @@ def filter_detections_for_camera(camera: Camera, detections: list[dict[str, Any]
                 kept.append(det)
             continue
 
+        # Surveillance / zone / thermal: keep allowlisted COCO + specialists; drop stray COCO noise.
+        if is_coco_detection(det) and not is_allowed_coco_class(det):
+            continue
         kept.append(det)
 
     return kept
