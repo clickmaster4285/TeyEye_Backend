@@ -199,6 +199,30 @@ class Staff(models.Model):
 
 
 class Attendance(models.Model):
+    STATUS_PRESENT = "present"
+    STATUS_LATE = "late"
+    STATUS_ABSENT = "absent"
+    STATUS_HALF_DAY = "half_day"
+    STATUS_CHOICES = [
+        (STATUS_PRESENT, "Present"),
+        (STATUS_LATE, "Late"),
+        (STATUS_ABSENT, "Absent"),
+        (STATUS_HALF_DAY, "Half Day"),
+    ]
+
+    SOURCE_CCTV = "cctv"
+    SOURCE_MANUAL = "manual"
+    SOURCE_WEBCAM = "webcam"
+    SOURCE_CAMERA = "camera"  # legacy detection-pipeline source
+    SOURCE_KIOSK = "kiosk"  # legacy kiosk source
+    SOURCE_CHOICES = [
+        (SOURCE_CCTV, "CCTV"),
+        (SOURCE_MANUAL, "Manual"),
+        (SOURCE_WEBCAM, "Webcam"),
+        (SOURCE_CAMERA, "Camera"),
+        (SOURCE_KIOSK, "Kiosk"),
+    ]
+
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -213,9 +237,22 @@ class Attendance(models.Model):
         null=True,
         blank=True,
     )
-    date = models.DateField(auto_now_add=True)
+    date = models.DateField(default=timezone.localdate, db_index=True)
     check_in = models.DateTimeField(null=True, blank=True)
     check_out = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PRESENT,
+    )
+    check_in_confidence = models.FloatField(null=True, blank=True)
+    check_out_confidence = models.FloatField(null=True, blank=True)
+    source = models.CharField(
+        max_length=20,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_MANUAL,
+    )
+    notes = models.TextField(blank=True, default="")
     image = models.ImageField(upload_to="attendance/", null=True, blank=True)
     video = models.FileField(
         upload_to="attendance/videos/",
@@ -223,6 +260,8 @@ class Attendance(models.Model):
         blank=True,
         help_text="Short camera clip captured when attendance was marked.",
     )
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True)
 
     class Meta:
         constraints = [
@@ -237,6 +276,7 @@ class Attendance(models.Model):
                 name="users_attendance_unique_staff_date",
             ),
         ]
+        ordering = ["-date", "-check_in"]
 
     def __str__(self):
         if self.user_id:

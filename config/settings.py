@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     "warehouse",
     "ml.apps.MlConfig",
     "person_journey.apps.PersonJourneyConfig",
+    "recognition.apps.RecognitionConfig",
 ]
 
 # -----------------------------
@@ -248,13 +249,38 @@ DETECTION_CLIP_SECONDS = int(os.getenv("DETECTION_CLIP_SECONDS", "7"))
 # Min seconds before the same label/class on one camera is saved again (0 = save every poll)
 DETECTION_DEDUP_SECONDS = int(os.getenv("DETECTION_DEDUP_SECONDS", "5"))
 
-# Attendance cameras — auto mark when enrolled staff are recognized
+# Attendance — InsightFace recognition + decision engine
 ATTENDANCE_FACE_MIN_CONFIDENCE = float(os.getenv("ATTENDANCE_FACE_MIN_CONFIDENCE", "0.25"))
 ATTENDANCE_CAMERA_MARK_COOLDOWN_SECONDS = int(os.getenv("ATTENDANCE_CAMERA_MARK_COOLDOWN_SECONDS", "120"))
 ATTENDANCE_MIN_CHECKOUT_HOURS = float(os.getenv("ATTENDANCE_MIN_CHECKOUT_HOURS", "4"))
+ATTENDANCE_MIN_CHECKOUT_AFTER_IN_MINUTES = float(
+    os.getenv("ATTENDANCE_MIN_CHECKOUT_AFTER_IN_MINUTES", "1")
+)
+ATTENDANCE_WORK_START = os.getenv("ATTENDANCE_WORK_START", "09:00")
+ATTENDANCE_LATE_AFTER = os.getenv("ATTENDANCE_LATE_AFTER", "09:30")
+ATTENDANCE_MIN_ENROLLMENT_IMAGES = int(os.getenv("ATTENDANCE_MIN_ENROLLMENT_IMAGES", "5"))
+ATTENDANCE_WEBCAM_SIMILARITY_THRESHOLD = float(
+    os.getenv("ATTENDANCE_WEBCAM_SIMILARITY_THRESHOLD", "0.45")
+)
+ATTENDANCE_CCTV_SIMILARITY_THRESHOLD = float(
+    os.getenv("ATTENDANCE_CCTV_SIMILARITY_THRESHOLD", "0.38")
+)
+ATTENDANCE_CCTV_AUTOSTART = os.getenv("ATTENDANCE_CCTV_AUTOSTART", "True").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+ATTENDANCE_INSIGHTFACE_MODEL = os.getenv("ATTENDANCE_INSIGHTFACE_MODEL", "buffalo_l")
+# Comma-separated ONNX providers override, e.g. "CPUExecutionProvider" or "DmlExecutionProvider,CPUExecutionProvider"
+ATTENDANCE_ONNX_PROVIDERS = os.getenv("ATTENDANCE_ONNX_PROVIDERS", "")
 ATTENDANCE_MARK_ON_FACE_RECOGNITION_CAMERAS = os.getenv(
     "ATTENDANCE_MARK_ON_FACE_RECOGNITION_CAMERAS", "True"
 ).lower() in ("true", "1", "yes")
+ATTENDANCE_MARK_ON_ALL_CAMERAS = os.getenv("ATTENDANCE_MARK_ON_ALL_CAMERAS", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 ATTENDANCE_SNAPSHOT_ENABLED = os.getenv("ATTENDANCE_SNAPSHOT_ENABLED", "True").lower() in (
     "true",
     "1",
@@ -262,7 +288,7 @@ ATTENDANCE_SNAPSHOT_ENABLED = os.getenv("ATTENDANCE_SNAPSHOT_ENABLED", "True").l
 )
 ATTENDANCE_VIDEO_SECONDS = float(os.getenv("ATTENDANCE_VIDEO_SECONDS", "5"))
 ATTENDANCE_VIDEO_FPS = int(os.getenv("ATTENDANCE_VIDEO_FPS", "10"))
-ATTENDANCE_VIDEO_WIDTH = int(os.getenv("ATTENDANCE_VIDEO_WIDTH", "1280"))
+ATTENDANCE_VIDEO_WIDTH = int(os.getenv("ATTENDANCE_VIDEO_WIDTH", "3840"))
 ATTENDANCE_VIDEO_JPEG_QUALITY = int(os.getenv("ATTENDANCE_VIDEO_JPEG_QUALITY", "95"))
 ATTENDANCE_VIDEO_CRF = int(os.getenv("ATTENDANCE_VIDEO_CRF", "18"))
 

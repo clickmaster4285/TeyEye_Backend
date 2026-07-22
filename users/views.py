@@ -13,7 +13,6 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from django_filters.rest_framework import DjangoFilterBackend
-from ml.client import MLServiceError, ml_recognize_face, ml_service_enabled
 from django.db.models import Q
 from .models import (
     Staff,
@@ -408,7 +407,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminOrHR]
     serializer_class = AttendanceSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["user", "staff", "date", "user__role"]
+    filterset_fields = ["user", "staff", "date", "user__role", "status", "source"]
     search_fields = ["user__username", "user__staff_profile__full_name", "staff__full_name"]
     ordering_fields = ["date", "check_in", "check_out"]
 
@@ -455,68 +454,157 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(
         detail=False,
         methods=["post"],
+        url_path="manual",
+    )
+    def manual(self, request):
+        """Manual check-in/out for a staff member."""
+        from users.attendance_service import AttendanceDecisionEngine
+
+        staff_id = request.data.get("staff_id")
+        action_type = request.data.get("action", "check_in")
+        notes = request.data.get("notes", "")
+
+        if not staff_id:
+            return Response({"error": "staff_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if action_type not in ("check_in", "check_out"):
+            return Response(
+                {"error": "action must be check_in or check_out"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        staff = Staff.objects.filter(pk=staff_id).select_related("user").first()
+        if not staff:
+            return Response({"error": "Staff not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        now = timezone.now()
+        today = timezone.localdate(now)
+        if staff.user_id and staff.user and not staff.user.is_deleted:
+            record, _ = Attendance.objects.get_or_create(
+                user=staff.user,
+                date=today,
+                defaults={"staff": staff, "source": Attendance.SOURCE_MANUAL},
+            )
+            if record.staff_id is None:
+                record.staff = staff
+        else:
+            record, _ = Attendance.objects.get_or_create(
+                staff=staff,
+                date=today,
+                defaults={"source": Attendance.SOURCE_MANUAL},
+            )
+
+        if action_type == "check_in":
+            if record.check_in:
+                return Response(
+                    {"error": "Already checked in today"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            record.check_in = now
+            record.status = AttendanceDecisionEngine.determine_status(now)
+            record.source = Attendance.SOURCE_MANUAL
+            if notes:
+                record.notes = notes
+            record.save()
+        else:
+            if not record.check_in:
+                return Response(
+                    {"error": "Must check in first"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if record.check_out:
+                return Response(
+                    {"error": "Already checked out today"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            record.check_out = now
+            if notes:
+                record.notes = notes
+            record.save()
+
+        create_activity_log(
+            request.user,
+            request,
+            f"Manual {action_type.replace('_', '-')} for {staff.full_name}",
+        )
+        return Response(AttendanceSerializer(record).data)
+
+    @action(
+        detail=False,
+        methods=["post"],
         url_path="recognize",
-        parser_classes=[MultiPartParser, FormParser],
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
     )
     def recognize(self, request):
-        if not ml_service_enabled():
+        """Identify face via InsightFace and optionally mark attendance."""
+        from recognition.views import build_gallery
+        from recognition.services.face_engine import get_face_engine
+        from users.attendance_service import (
+            mark_attendance_for_staff,
+            staff_is_enrolled_for_attendance,
+        )
+
+        auto_mark = str(request.data.get("auto_mark", "true")).lower() in ("true", "1", "yes")
+        source = request.data.get("source", Attendance.SOURCE_WEBCAM)
+        if source not in (
+            Attendance.SOURCE_WEBCAM,
+            Attendance.SOURCE_CCTV,
+            Attendance.SOURCE_MANUAL,
+            Attendance.SOURCE_KIOSK,
+        ):
+            source = Attendance.SOURCE_WEBCAM
+
+        image = request.FILES.get("image")
+        image_b64 = request.data.get("image")
+        image_bytes = None
+
+        try:
+            engine = get_face_engine()
+        except Exception as exc:
             return Response(
                 {
                     "error": (
-                        "ML service is not configured. Set ML_SERVICE_URL in backend/.env "
-                        "and run the inference server: cd ml_services && python api_server.py"
+                        "InsightFace engine unavailable. Install backend deps "
+                        "(insightface, onnxruntime) and retry. "
+                        f"Detail: {exc}"
                     )
                 },
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        image = request.FILES.get("image")
-        if not image:
-            return Response({"error": "image file is required."}, status=status.HTTP_400_BAD_REQUEST)
-
-        auto_mark = str(request.data.get("auto_mark", "true")).lower() in ("true", "1", "yes")
-        threshold_raw = request.data.get("threshold")
-        image_bytes = image.read()
-
         try:
-            result = ml_recognize_face(image_bytes, filename=image.name or "face.jpg")
-        except MLServiceError as exc:
-            return Response({"error": str(exc)}, status=exc.status_code or status.HTTP_503_SERVICE_UNAVAILABLE)
+            if image:
+                image_bytes = image.read()
+                frame = engine.decode_image(image_bytes)
+            elif image_b64:
+                frame = engine.decode_base64(str(image_b64))
+            else:
+                return Response(
+                    {"error": "image file or base64 image is required."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except (ValueError, Exception):
+            return Response({"error": "Invalid image data"}, status=status.HTTP_400_BAD_REQUEST)
 
-        identity = str(result.get("identity", "unknown"))
-        similarity = float(result.get("similarity", 0))
-        recognized = bool(result.get("recognized"))
+        gallery = build_gallery()
+        result = engine.identify_from_image(frame, gallery)
 
-        if threshold_raw is not None:
-            try:
-                recognized = identity != "unknown" and similarity >= float(threshold_raw)
-            except (TypeError, ValueError):
-                return Response({"error": "threshold must be a number."}, status=status.HTTP_400_BAD_REQUEST)
-
-        if not recognized:
+        if not result.get("matched"):
             return Response(
                 {
                     "recognized": False,
-                    "message": "No matching staff face found.",
-                    "identity": identity,
-                    "similarity": similarity,
+                    "message": result.get("message") or "No matching staff face found.",
+                    "similarity": result.get("confidence", 0),
                 }
             )
 
-        from users.attendance_service import (
-            mark_attendance_for_staff,
-            resolve_staff_for_face_identity,
-            staff_is_enrolled_for_attendance,
-        )
-
-        staff_profile = resolve_staff_for_face_identity(identity)
+        staff_id = result.get("staff_id")
+        staff_profile = Staff.objects.filter(pk=staff_id).select_related("user").first()
         if not staff_profile:
             return Response(
                 {
                     "recognized": False,
                     "message": "No matching staff face found in HR records.",
-                    "identity": identity,
-                    "similarity": similarity,
+                    "similarity": result.get("confidence", 0),
                 }
             )
 
@@ -524,44 +612,54 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             return Response(
                 {
                     "recognized": False,
-                    "message": "Staff member has no enrolled face photos. Upload photos and sync embeddings.",
-                    "identity": identity,
-                    "similarity": similarity,
+                    "message": "Staff member has no trained InsightFace enrollment.",
+                    "similarity": result.get("confidence", 0),
                 }
             )
 
-        user = staff_profile.user if staff_profile.user_id and not staff_profile.user.is_deleted else None
+        user = (
+            staff_profile.user
+            if staff_profile.user_id and not staff_profile.user.is_deleted
+            else None
+        )
         payload = {
             "recognized": True,
             "user_id": user.id if user else None,
             "staff_id": staff_profile.id,
             "username": user.username if user else None,
             "staff_name": staff_profile.full_name,
-            "similarity": similarity,
+            "similarity": result.get("confidence", 0),
+            "confidence": result.get("confidence", 0),
         }
 
         if not auto_mark:
             return Response(payload)
 
-        action, attendance = mark_attendance_for_staff(staff_profile, source="kiosk", allow_checkout=True)
+        action, attendance = mark_attendance_for_staff(
+            staff_profile,
+            source=source if source != Attendance.SOURCE_KIOSK else Attendance.SOURCE_WEBCAM,
+            allow_checkout=True,
+            confidence=float(result.get("confidence") or 0),
+        )
         payload["attendance"] = action
         if attendance:
             payload["record_id"] = attendance.id
+            payload["status"] = attendance.status
 
         if action in ("check_in", "check_out") and attendance and image_bytes:
-            attendance.image.save(image.name or "face.jpg", ContentFile(image_bytes), save=True)
+            attendance.image.save(image.name if image else "face.jpg", ContentFile(image_bytes), save=True)
 
         if action == "check_in":
             create_activity_log(
                 request.user,
                 request,
-                f"Face check-in: {staff_profile.full_name} (similarity {similarity:.2f})",
+                f"Face check-in: {staff_profile.full_name} (similarity {result.get('confidence', 0):.2f})",
             )
         elif action == "check_out":
             create_activity_log(
                 request.user,
                 request,
-                f"Face check-out: {staff_profile.full_name} (similarity {similarity:.2f})",
+                f"Face check-out: {staff_profile.full_name} (similarity {result.get('confidence', 0):.2f})",
             )
 
         return Response(payload)
