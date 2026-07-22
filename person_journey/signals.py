@@ -78,7 +78,16 @@ def on_attendance_record(sender, instance, created, **kwargs):
         if person is None:
             return
 
-        if instance.check_in and (created or kwargs.get("update_fields") is None):
+        # Prefer update_fields-aware journey events for check-in/out
+        update_fields = kwargs.get("update_fields")
+        check_in_changed = created or (update_fields is None) or (
+            update_fields is not None and "check_in" in update_fields
+        )
+        check_out_changed = created or (update_fields is None) or (
+            update_fields is not None and "check_out" in update_fields
+        )
+
+        if instance.check_in and check_in_changed:
             if not JourneyEvent.objects.filter(
                 journey_person=person,
                 event_type=JourneyEventType.ATTENDANCE_CHECK_IN,
@@ -89,10 +98,13 @@ def on_attendance_record(sender, instance, created, **kwargs):
                     event_type=JourneyEventType.ATTENDANCE_CHECK_IN,
                     title="Attendance Check-In",
                     attendance_id=instance.pk,
-                    metadata={"source": "attendance_hook"},
+                    metadata={
+                        "source": getattr(instance, "source", None) or "attendance_hook",
+                        "status": getattr(instance, "status", None),
+                    },
                 )
 
-        if instance.check_out:
+        if instance.check_out and check_out_changed:
             if not JourneyEvent.objects.filter(
                 journey_person=person,
                 event_type=JourneyEventType.ATTENDANCE_CHECK_OUT,
@@ -103,7 +115,10 @@ def on_attendance_record(sender, instance, created, **kwargs):
                     event_type=JourneyEventType.ATTENDANCE_CHECK_OUT,
                     title="Attendance Check-Out",
                     attendance_id=instance.pk,
-                    metadata={"source": "attendance_hook"},
+                    metadata={
+                        "source": getattr(instance, "source", None) or "attendance_hook",
+                        "status": getattr(instance, "status", None),
+                    },
                 )
     except Exception:
         logger.exception("Journey attendance hook failed")

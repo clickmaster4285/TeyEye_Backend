@@ -512,10 +512,32 @@ class LinkUserToStaffSerializer(serializers.Serializer):
 class AttendanceSerializer(serializers.ModelSerializer):
     username = serializers.SerializerMethodField(read_only=True)
     staff_name = serializers.SerializerMethodField(read_only=True)
+    employee_id = serializers.SerializerMethodField(read_only=True)
+    department = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Attendance
-        fields = ["id", "user", "staff", "username", "staff_name", "date", "check_in", "check_out", "image", "video"]
+        fields = [
+            "id",
+            "user",
+            "staff",
+            "username",
+            "staff_name",
+            "employee_id",
+            "department",
+            "date",
+            "check_in",
+            "check_out",
+            "status",
+            "check_in_confidence",
+            "check_out_confidence",
+            "source",
+            "notes",
+            "image",
+            "video",
+            "created_at",
+            "updated_at",
+        ]
 
     def get_username(self, obj):
         if obj.user_id:
@@ -529,6 +551,20 @@ class AttendanceSerializer(serializers.ModelSerializer):
             return obj.staff.full_name
         if obj.user_id and hasattr(obj.user, "staff_profile"):
             return obj.user.staff_profile.full_name
+        return None
+
+    def get_employee_id(self, obj):
+        if obj.staff_id:
+            return obj.staff.employee_id
+        if obj.user_id and hasattr(obj.user, "staff_profile"):
+            return obj.user.staff_profile.employee_id
+        return None
+
+    def get_department(self, obj):
+        if obj.staff_id:
+            return obj.staff.department
+        if obj.user_id and hasattr(obj.user, "staff_profile"):
+            return obj.user.staff_profile.department
         return None
 
 
